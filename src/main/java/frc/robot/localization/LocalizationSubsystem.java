@@ -110,29 +110,22 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
       SmartDashboard.putString("Localization/VisionRecoveryStatus", "vision loss latched");
     }
 
-    var left = vision.getLeftTagResult();
     var right = vision.getRightTagResult();
-    if (left.isEmpty() && right.isEmpty()) {
-      // Neither camera produced a usable result; the per-camera RejectReason keys say why.
-      SmartDashboard.putString("Localization/VisionStatus", "no tag result from either camera");
+    if (right.isEmpty()) {
+      // Only the right camera is permitted to update translation. The per-camera RejectReason key
+      // explains why it did not produce a usable result.
+      SmartDashboard.putString("Localization/VisionStatus", "no usable right-camera pose result");
     }
-    TagResult bestRecoveryCandidate = null;
-    TagResult leftResult = left.orElse(null);
-    if (leftResult != null && ingestTagResult(leftResult, now)) {
-      bestRecoveryCandidate = leftResult;
-    }
+    TagResult rightRecoveryCandidate = null;
     TagResult rightResult = right.orElse(null);
     if (rightResult != null && ingestTagResult(rightResult, now)) {
-      if (bestRecoveryCandidate == null
-          || getXyStdDev(rightResult) < getXyStdDev(bestRecoveryCandidate)) {
-        bestRecoveryCandidate = rightResult;
-      }
+      rightRecoveryCandidate = rightResult;
     }
 
-    if (bestRecoveryCandidate != null) {
+    if (rightRecoveryCandidate != null) {
       lastAcceptedVisionRobotTime = now;
       if (visionRecoveryPending) {
-        processRecoveryCandidate(bestRecoveryCandidate, now);
+        processRecoveryCandidate(rightRecoveryCandidate, now);
       }
     } else if (visionRecoveryPending
         && visionRecoveryGate.getConsistentFrames() > 0
@@ -144,7 +137,7 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
 
     SmartDashboard.putBoolean("Localization/VisionRecoveryPending", visionRecoveryPending);
 
-    updateHeadingFromVision();
+    updateHeadingFromRightVision();
 
     Pose2d pose = getPose();
     SmartDashboard.putNumberArray(
@@ -167,7 +160,7 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
 
   }
 
-  private void updateHeadingFromVision() {
+  private void updateHeadingFromRightVision() {
     // Always blue-origin: the drivetrain pose estimator is blue-origin, so a red-origin
     // botpose would be flipped 180 degrees.
     var mt1Estimate = LimelightHelpers.getBotPoseEstimate_wpiBlue(RIGHT_LIMELIGHT_NAME);
