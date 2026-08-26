@@ -116,7 +116,20 @@ public class Limelight extends StateMachine<LimelightState> {
   }
 
   public OptionalTagResult getTagResult() {
-    SmartDashboard.putNumber(debugKey("RawTV"), LimelightHelpers.getTV(limelightTableName) ? 1 : 0);
+    boolean tv = LimelightHelpers.getTV(limelightTableName);
+    SmartDashboard.putBoolean(debugKey("TV"), tv);
+    SmartDashboard.putNumber(debugKey("RawTV"), tv ? 1 : 0);
+    // Publish the arrays exactly as received from NetworkTables, before any validity filters. This
+    // distinguishes a SystemCore/NT connection problem from a localization rejection.
+    SmartDashboard.putNumberArray(
+        debugKey("RawBotposeWpiBlue"),
+        LimelightHelpers.getLimelightNTDoubleArray(limelightTableName, "botpose_wpiblue"));
+    SmartDashboard.putNumberArray(
+        debugKey("RawBotposeOrbWpiBlue"),
+        LimelightHelpers.getLimelightNTDoubleArray(limelightTableName, "botpose_orb_wpiblue"));
+    SmartDashboard.putNumber(
+        debugKey("Heartbeat"),
+        LimelightHelpers.getLimelightNTDouble(limelightTableName, "hb"));
 
     // If this is 0, nothing is publishing to this table name at all -- the camera's hostname in
     // its web UI does not match "limelight-left"/"limelight-right", or it is off the network.

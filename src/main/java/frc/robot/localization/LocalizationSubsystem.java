@@ -147,6 +147,9 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
     updateHeadingFromVision();
 
     Pose2d pose = getPose();
+    SmartDashboard.putNumberArray(
+        "Localization/EstimatedPose",
+        new double[] {pose.getX(), pose.getY(), pose.getRotation().getDegrees()});
     botposeBluePub.set(new double[] {
         pose.getX(),
         pose.getY(),
