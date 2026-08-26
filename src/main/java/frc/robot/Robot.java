@@ -61,6 +61,7 @@ public class Robot extends TimedRobot {
   private static final boolean ENABLE_DASHBOARD = true;
   private static final String SIM_ROTATION_AXIS_KEY = "Simulation/Driver/RotationAxis";
   private static final String SIM_SHOOT_AXIS_KEY = "Simulation/Driver/ShootAxis";
+  private static final int RAW_XBOX_BACK_BUTTON = 6;
   private Command autonomousCommand = Commands.none();
   private final Hardware hardware = new Hardware();
 
@@ -587,12 +588,13 @@ public class Robot extends TimedRobot {
   }
 
   private void configureBindings() {
-    hardware.driverController.back().onTrue(
-      Commands.runOnce(() -> {
-        double heading = FmsSubsystem.isRedAlliance() ? 180.0 : 0.0;
-        localization.resetGyro(Rotation2d.fromDegrees(heading));
-      })
-    );
+    // The controller is exposed in the traditional zero-based raw Xbox layout. Its physical
+    // View/Back button is raw button 6; CommandGamepad.back() reads logical Gamepad button 4.
+    hardware.driverController.button(RAW_XBOX_BACK_BUTTON).onTrue(
+        Commands.runOnce(() -> {
+          double heading = FmsSubsystem.isRedAlliance() ? 180.0 : 0.0;
+          localization.resetGyro(Rotation2d.fromDegrees(heading));
+        }).ignoringDisable(true));
 
 
     hardware.operatorController.northFace().whileTrue(
