@@ -119,6 +119,7 @@ public class Limelight extends StateMachine<LimelightState> {
     boolean tv = LimelightHelpers.getTV(limelightTableName);
     SmartDashboard.putBoolean(debugKey("TV"), tv);
     SmartDashboard.putNumber(debugKey("RawTV"), tv ? 1 : 0);
+    SmartDashboard.putNumber(debugKey("TX"), LimelightHelpers.getTX(limelightTableName));
     // Publish the arrays exactly as received from NetworkTables, before any validity filters. This
     // distinguishes a SystemCore/NT connection problem from a localization rejection.
     SmartDashboard.putNumberArray(
