@@ -122,12 +122,16 @@ public class Limelight extends StateMachine<LimelightState> {
     SmartDashboard.putNumber(debugKey("TX"), LimelightHelpers.getTX(limelightTableName));
     // Publish the arrays exactly as received from NetworkTables, before any validity filters. This
     // distinguishes a SystemCore/NT connection problem from a localization rejection.
-    SmartDashboard.putNumberArray(
-        debugKey("RawBotposeWpiBlue"),
-        LimelightHelpers.getLimelightNTDoubleArray(limelightTableName, "botpose_wpiblue"));
-    SmartDashboard.putNumberArray(
-        debugKey("RawBotposeOrbWpiBlue"),
-        LimelightHelpers.getLimelightNTDoubleArray(limelightTableName, "botpose_orb_wpiblue"));
+    double[] rawMt1Pose =
+        LimelightHelpers.getLimelightNTDoubleArray(limelightTableName, "botpose_wpiblue");
+    double[] rawMt2Pose =
+        LimelightHelpers.getLimelightNTDoubleArray(limelightTableName, "botpose_orb_wpiblue");
+    boolean mt1Publishing = rawMt1Pose.length >= 6;
+    boolean mt2Publishing = rawMt2Pose.length >= 6;
+    SmartDashboard.putNumberArray(debugKey("RawBotposeWpiBlue"), rawMt1Pose);
+    SmartDashboard.putNumberArray(debugKey("RawBotposeOrbWpiBlue"), rawMt2Pose);
+    SmartDashboard.putBoolean(debugKey("MT1Publishing"), mt1Publishing);
+    SmartDashboard.putBoolean(debugKey("MT2Publishing"), mt2Publishing);
     SmartDashboard.putNumber(
         debugKey("Heartbeat"),
         LimelightHelpers.getLimelightNTDouble(limelightTableName, "hb"));
@@ -142,8 +146,13 @@ public class Limelight extends StateMachine<LimelightState> {
 
     var mT2Estimate = LimelightHelpers.getBotPoseEstimate_wpiBlue_MegaTag2(limelightTableName);
     if (mT2Estimate == null) {
-      // Table exists but botpose_orb_wpiblue is absent: MegaTag2 is not publishing.
-      return reject("no botpose_orb_wpiblue (MegaTag2 not publishing)");
+      if (mt1Publishing) {
+        return reject("MT1 present, MT2 absent - check robot_orientation_set and IMU mode");
+      }
+      if (tv) {
+        return reject("TV true but no botpose - check field map and camera pose");
+      }
+      return reject("TV false - no valid AprilTag target");
     }
 
     SmartDashboard.putNumber(debugKey("TagCount"), mT2Estimate.tagCount);
