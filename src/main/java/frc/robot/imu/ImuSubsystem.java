@@ -6,11 +6,15 @@ import org.wpilib.math.filter.Debouncer;
 import org.wpilib.math.filter.Debouncer.DebounceType;
 import frc.robot.util.scheduling.SubsystemPriority;
 import frc.robot.util.state_machines.StateMachine;
+import java.util.function.DoubleSupplier;
+import org.wpilib.framework.RobotBase;
 
 public class ImuSubsystem extends StateMachine<ImuState> {
   private static final double IS_TILTED_THRESHOLD = 4.0;
   private static final Debouncer IS_TILTED_DEBOUNCE = new Debouncer(0.5, DebounceType.kRising);
   private final Pigeon2 imu;
+  private final DoubleSupplier simulatedHeadingDegrees;
+  private final DoubleSupplier simulatedAngularVelocityDegreesPerSecond;
   private double robotHeading = 0;
   private double pitch;
   private double angularVelocity;
@@ -19,12 +23,30 @@ public class ImuSubsystem extends StateMachine<ImuState> {
   private double rollRate;
 
   public ImuSubsystem(Pigeon2 imu) {
+    this(imu, null, null);
+  }
+
+  public ImuSubsystem(
+      Pigeon2 imu,
+      DoubleSupplier simulatedHeadingDegrees,
+      DoubleSupplier simulatedAngularVelocityDegreesPerSecond) {
     super(SubsystemPriority.IMU, ImuState.DEFAULT_STATE);
     this.imu = imu;
+    this.simulatedHeadingDegrees = simulatedHeadingDegrees;
+    this.simulatedAngularVelocityDegreesPerSecond = simulatedAngularVelocityDegreesPerSecond;
   }
 
   @Override
   protected void collectInputs() {
+    if (RobotBase.isSimulation() && simulatedHeadingDegrees != null) {
+      robotHeading = MathUtil.inputModulus(simulatedHeadingDegrees.getAsDouble(), -180, 180);
+      angularVelocity = simulatedAngularVelocityDegreesPerSecond.getAsDouble();
+      pitch = 0.0;
+      pitchRate = 0.0;
+      roll = 0.0;
+      rollRate = 0.0;
+      return;
+    }
     robotHeading = MathUtil.inputModulus(imu.getYaw().getValueAsDouble(), -180, 180);
     angularVelocity = imu.getAngularVelocityZWorld().getValueAsDouble();
     pitch = imu.getPitch().getValueAsDouble();

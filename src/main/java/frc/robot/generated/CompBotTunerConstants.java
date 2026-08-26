@@ -3,6 +3,7 @@ package frc.robot.generated;
 import static org.wpilib.units.Units.*;
 
 import com.ctre.phoenix6.CANBus;
+import com.ctre.phoenix6.Utils;
 import com.ctre.phoenix6.configs.*;
 import com.ctre.phoenix6.hardware.*;
 import com.ctre.phoenix6.signals.*;
@@ -81,7 +82,10 @@ public class CompBotTunerConstants {
     // CAN bus that the devices are located on;
     // All swerve devices must share the same CAN bus
     // "CANivore" does not exist on SystemCore; the swerve devices live on can_s0.
-    public static final CANBus kCANBus = new CANBus("can_s0", "./logs/example.hoot");
+    // Windows simulation uses Phoenix's default simulated bus. Keep the native SystemCore bus
+    // only for real hardware; a literal can_s0 bus does not produce status frames on desktop.
+    public static final CANBus kCANBus =
+        Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(0);
 
     // Theoretical free speed (m/s) at 12 V applied output;
     // This needs to be tuned to your individual robot

@@ -15,7 +15,7 @@ class CompConfig {
   public static final RobotConfig competitionBot =
                   new RobotConfig(
                       "comp",
-                      new SwerveConfig(createSnapController(), true, true, true),
+                      new SwerveConfig(createSnapController(), true, false, false),
                       new VisionConfig(
                           0.005,
                           0.8,

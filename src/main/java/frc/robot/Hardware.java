@@ -2,6 +2,7 @@ package frc.robot;
 
 import org.wpilib.command2.button.CommandGamepad;
 import com.ctre.phoenix6.CANBus;
+import com.ctre.phoenix6.Utils;
 import com.ctre.phoenix6.hardware.TalonFX;
 import frc.robot.vision.limelight.Limelight;
 import frc.robot.vision.limelight.LimelightModel;
@@ -13,8 +14,12 @@ public class Hardware {
   // CANivore USB adapters do not exist on this platform -- naming them made Phoenix fail
   // with "CANbus Failed to Connect". Bus assignments verified by candump on the robot:
   // can_s0 carries device IDs 0,1,2,3,5-12,21-29,51; can_s4 carries 31,32.
-  private static final CANBus CANIVORE = new CANBus("can_s0");
-  private static final CANBus RIO      = new CANBus("can_s4");
+  // Phoenix desktop simulation exposes one default simulated bus. Device IDs are unique across
+  // these two real buses, so both can safely share it in sim.
+  private static final CANBus CANIVORE =
+      Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(0);
+  private static final CANBus RIO =
+      Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(4);
 
   public final CommandGamepad driverController = new CommandGamepad(0);
   public final CommandGamepad operatorController   = new CommandGamepad(1); 

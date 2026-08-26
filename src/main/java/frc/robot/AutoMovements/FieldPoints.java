@@ -11,6 +11,7 @@ public final class FieldPoints {
   private FieldPoints() {}
 
   public static final double FIELD_LENGTH = 16.5408;
+  public static final double FIELD_WIDTH = 8.0692752;
 
   // ===== MIRRORING UTILITIES =====
   public static double mirrorX(double redX) {
@@ -26,6 +27,14 @@ public final class FieldPoints {
         FIELD_LENGTH - redPose.getX(),
         redPose.getY(),
         Rotation2d.fromDegrees(180.0 - redPose.getRotation().getDegrees()));
+  }
+
+  /** Mirrors a pose between the left and right sides while staying on the same alliance end. */
+  public static Pose2d mirrorPoseLeftRight(Pose2d pose) {
+    return new Pose2d(
+        pose.getX(),
+        FIELD_WIDTH - pose.getY(),
+        Rotation2d.fromDegrees(-pose.getRotation().getDegrees()));
   }
 
   public static Translation2d mirrorTranslation(Translation2d redPoint) {
@@ -74,7 +83,11 @@ public final class FieldPoints {
   // ===== ALLIANCE-AWARE GETTERS =====
 
   public static boolean isInShootZone(double robotX) {
-    if (FmsSubsystem.isRedAlliance()) {
+    return isInShootZone(robotX, FmsSubsystem.isRedAlliance());
+  }
+
+  public static boolean isInShootZone(double robotX, boolean redAlliance) {
+    if (redAlliance) {
       return robotX >= SHOOT_X_THRESHOLD_RED;
     } else {
       return robotX <= mirrorX(SHOOT_X_THRESHOLD_RED);

@@ -23,7 +23,8 @@ public class LookupTable extends StateMachine<LookupTable.State> {
     public enum State { DISABLED, ENABLED }
 
     // Pass interp table: distance (m) → RPM
-    public static final double PASS_HOOD_ANGLE_DEG = -60.0;
+    // Match Hood's safe mechanical lower limit; older code requested -60 and was silently clamped.
+    public static final double PASS_HOOD_ANGLE_DEG = -40.0;
     private static final InterpolatingDoubleTreeMap PASS_RPM_TABLE =
         InterpolatingDoubleTreeMap.ofEntries(
             Map.entry(3.0, 3000.0  - 1000.0),

@@ -8,13 +8,10 @@ import org.wpilib.command2.Commands;
 import frc.robot.AutoMovements.FieldPoints;
 import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
-// BLine-Lib v0.9.1 is compiled against 2026 WPILib (edu.wpi.first.*) and cannot be used
-// with WPILib 2027. Disabled until a 2027 build is available; re-enable everything marked
-// "BLINE DISABLED" below to restore path following.
-// import frc.robot.lib.BLine.FollowPath;
-// import frc.robot.lib.BLine.Path;
-// import frc.robot.lib.BLine.Path.Waypoint;
-// import frc.robot.lib.BLine.Path.PathConstraints;
+import frc.robot.lib.BLine.FollowPath;
+import frc.robot.lib.BLine.Path;
+import frc.robot.lib.BLine.Path.Waypoint;
+import frc.robot.lib.BLine.Path.PathConstraints;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,14 +37,13 @@ import java.util.List;
 public class AutoRoutine {
   private final SwerveSubsystem swerve;
   private final LocalizationSubsystem localization;
-  // BLINE DISABLED: private final FollowPath.Builder pathBuilder;
+  private final FollowPath.Builder pathBuilder;
   private final boolean mirror;
   private final List<Command> steps = new ArrayList<>();
   private Pose2d startPose = null;
 
   // Accumulated waypoints for the current BLine path segment.
-  // BLINE DISABLED: held as Pose2d instead of Waypoint while BLine is unavailable.
-  private final List<Pose2d> pendingWaypoints = new ArrayList<>();
+  private final List<Waypoint> pendingWaypoints = new ArrayList<>();
   // Per-waypoint max speed constraints (null = use default)
   private final List<Double> pendingMaxSpeeds = new ArrayList<>();
 
@@ -60,23 +56,25 @@ public class AutoRoutine {
   private static final double DRIVE_SAFETY_TIMEOUT_SECS = 8.0;
 
 
-  // BLINE DISABLED: the FollowPath.Builder parameter is dropped from these signatures
-  // while BLine is unavailable. Restore it (and the assignment) alongside the imports.
   private AutoRoutine(SwerveSubsystem swerve, LocalizationSubsystem localization,
-                      boolean mirror) {
+                      FollowPath.Builder pathBuilder, boolean mirror) {
     this.swerve = swerve;
     this.localization = localization;
+    this.pathBuilder = pathBuilder;
     this.mirror = mirror;
   }
 
   /** Create a new auto routine builder using BLine path following. */
-  public static AutoRoutine create(SwerveSubsystem swerve, LocalizationSubsystem localization) {
-    return new AutoRoutine(swerve, localization, false);
+  public static AutoRoutine create(SwerveSubsystem swerve, LocalizationSubsystem localization,
+                                   FollowPath.Builder pathBuilder) {
+    return new AutoRoutine(swerve, localization, pathBuilder, false);
   }
 
   /** Create a new auto routine builder that mirrors all poses (red → blue). */
-  public static AutoRoutine createMirrored(SwerveSubsystem swerve, LocalizationSubsystem localization) {
-    return new AutoRoutine(swerve, localization, true);
+  public static AutoRoutine createMirrored(SwerveSubsystem swerve,
+                                           LocalizationSubsystem localization,
+                                           FollowPath.Builder pathBuilder) {
+    return new AutoRoutine(swerve, localization, pathBuilder, true);
   }
 
   // ---- Starting pose ----
@@ -121,8 +119,7 @@ public class AutoRoutine {
   }
 
   private void addWaypoint(Pose2d pose, Double maxSpeed) {
-    // BLINE DISABLED: was pendingWaypoints.add(new Waypoint(pose));
-    pendingWaypoints.add(pose);
+    pendingWaypoints.add(new Waypoint(pose));
     pendingMaxSpeeds.add(maxSpeed);
   }
 
@@ -218,36 +215,31 @@ public class AutoRoutine {
       return;
     }
 
-    // BLINE DISABLED — path construction and following are unavailable. Restore this block:
-    //
-    //   List<Path.PathElement> elements = new ArrayList<>(pendingWaypoints);
-    //   Path path;
-    //
-    //   // Check if any waypoint has a speed constraint — use the minimum as the path constraint
-    //   Double minMaxSpeed = null;
-    //   for (Double speed : pendingMaxSpeeds) {
-    //     if (speed != null) {
-    //       if (minMaxSpeed == null || speed < minMaxSpeed) {
-    //         minMaxSpeed = speed;
-    //       }
-    //     }
-    //   }
-    //
-    //   if (minMaxSpeed != null) {
-    //     PathConstraints constraints = new PathConstraints()
-    //         .setMaxVelocityMetersPerSec(minMaxSpeed);
-    //     path = new Path(elements, constraints);
-    //   } else {
-    //     path = new Path(elements);
-    //   }
-    //
-    //   Command drive = pathBuilder.build(path);
-    //
-    // ...and delete the no-op `drive` below.
-    Command drive = Commands.none().withName("BLineDriveDisabled");
+    List<Path.PathElement> elements = new ArrayList<>(pendingWaypoints);
+    Path path;
 
-    // Apply explicit timeout if set, otherwise use safety timeout
-    double timeout = pendingTimeoutSeconds != null ? pendingTimeoutSeconds : DRIVE_SAFETY_TIMEOUT_SECS;
+    // A BLine constraint applies to this complete batched path, so use the most restrictive
+    // maximum requested by any waypoint in the segment.
+    Double minMaxSpeed = null;
+    for (Double speed : pendingMaxSpeeds) {
+      if (speed != null && (minMaxSpeed == null || speed < minMaxSpeed)) {
+        minMaxSpeed = speed;
+      }
+    }
+
+    if (minMaxSpeed != null) {
+      PathConstraints constraints = new PathConstraints()
+          .setMaxVelocityMetersPerSec(minMaxSpeed);
+      path = new Path(elements, constraints);
+    } else {
+      path = new Path(elements);
+    }
+
+    Command drive = pathBuilder.build(path);
+    double timeout = pendingTimeoutSeconds != null
+        ? pendingTimeoutSeconds
+        : DRIVE_SAFETY_TIMEOUT_SECS;
+
     pendingTimeoutSeconds = null;
 
     // Attach parallel commands if any

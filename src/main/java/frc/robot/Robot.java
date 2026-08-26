@@ -7,13 +7,18 @@ import org.wpilib.driverstation.RobotState;
 import org.wpilib.driverstation.Gamepad;
 import org.wpilib.framework.TimedRobot;
 import org.wpilib.math.geometry.Rotation2d;
+import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.command2.Command;
 import org.wpilib.command2.CommandScheduler;
 import org.wpilib.command2.Commands;
+import org.wpilib.command2.button.Trigger;
 import frc.robot.imu.ImuSubsystem;
 import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
+import frc.robot.sim.RobotSimulation;
 import frc.robot.AutoMovements.HeadingLock;
+import frc.robot.AutoMovements.HeadingLockMath;
+import frc.robot.AutoMovements.RightTriggerMath;
 import frc.robot.AutoMovements.OutpostSetpoint;
 import frc.robot.FlywheelSubsystem.DistanceCalc;
 import frc.robot.FlywheelSubsystem.LookupTable;
@@ -35,7 +40,7 @@ import frc.robot.currentPhase.phaseTimer;
 import org.wpilib.smartdashboard.Field2d;
 import org.wpilib.smartdashboard.SmartDashboard;
 import org.wpilib.driverstation.GenericHID.RumbleType;
-import org.wpilib.simulation.RoboRioSim;
+import org.wpilib.framework.RobotBase;
 
 import com.pathplanner.lib.auto.AutoBuilder;
 import com.pathplanner.lib.auto.NamedCommands;
@@ -47,19 +52,25 @@ import com.ctre.phoenix6.SignalLogger;
 import org.wpilib.math.controller.PIDController;
 import org.wpilib.math.geometry.Transform2d;
 import org.wpilib.math.geometry.Translation2d;
-// BLINE DISABLED (BLine-Lib v0.9.1 targets 2026 WPILib):
-// import frc.robot.lib.BLine.FollowPath;
-// import frc.robot.lib.BLine.Path;
+import frc.robot.lib.BLine.FollowPath;
+import frc.robot.lib.BLine.Path;
 
 
 
 public class Robot extends TimedRobot {
   private static final boolean ENABLE_DASHBOARD = true;
+  private static final String SIM_ROTATION_AXIS_KEY = "Simulation/Driver/RotationAxis";
+  private static final String SIM_SHOOT_AXIS_KEY = "Simulation/Driver/ShootAxis";
   private Command autonomousCommand = Commands.none();
   private final Hardware hardware = new Hardware();
 
   private final SwerveSubsystem swerve = new SwerveSubsystem();
-  private final ImuSubsystem imu = new ImuSubsystem(swerve.drivetrainPigeon);
+  private final RobotSimulation simulation =
+      RobotBase.isSimulation() ? new RobotSimulation(hardware, swerve) : null;
+  private final ImuSubsystem imu = new ImuSubsystem(
+      swerve.drivetrainPigeon,
+      () -> swerve.getSimPose().getRotation().getDegrees(),
+      () -> Math.toDegrees(swerve.getSimFieldVelocity().omega));
 
   private final VisionSubsystem vision = new VisionSubsystem(
       imu,
@@ -87,7 +98,7 @@ public class Robot extends TimedRobot {
 
 
 
-  // BLINE DISABLED: private final FollowPath.Builder blinePathBuilder;
+  private final FollowPath.Builder blinePathBuilder;
   private final phaseTimer phaseTimer = new phaseTimer();
   private final PointToPointAutos pointToPointAutos;
   private boolean prevOperatorX = false;
@@ -97,8 +108,6 @@ public class Robot extends TimedRobot {
   private final Field2d field2d = new Field2d();
   private final org.wpilib.math.controller.PIDController trenchYController =
       new org.wpilib.math.controller.PIDController(3.0, 0.0, 0.0);
-  private Translation2d savedRedTarget;
-  private Translation2d savedBlueTarget;
   private Translation2d activePassTarget;
   private boolean rtShootMode = true;
   private static final double SHOOT_SPEED_THRESHOLD = 0.5; // m/s — don't feed if moving faster
@@ -120,6 +129,15 @@ public class Robot extends TimedRobot {
     LifecycleSubsystemManager.ready();
 
     SmartDashboard.putData("Field", field2d);
+
+    if (simulation != null) {
+      simulation.initialize();
+      SmartDashboard.putData("Simulation/DriverController", hardware.driverController.getHID());
+      // Traditional Xbox/DirectInput mappings expose right-stick X on raw axis 4. This remains
+      // dashboard-selectable for controllers that provide WPILib's logical Gamepad axis 2.
+      SmartDashboard.putNumber(SIM_ROTATION_AXIS_KEY, 4);
+      SmartDashboard.putNumber(SIM_SHOOT_AXIS_KEY, 3);
+    }
 
   orchestra.addInstrument(hardware.drumA1);
   orchestra.addInstrument(hardware.drumA2);
@@ -159,36 +177,32 @@ public class Robot extends TimedRobot {
       DriverStationErrors.reportError("Failed to configure PathPlanner: " + e.getMessage(), e.getStackTrace());
     }
 
-    // BLINE DISABLED — global constraints and path-follower setup. Restore this block:
-    //
-    //   // BLine-Lib global constraints (no GUI/JSON needed)
-    //   Path.setDefaultGlobalConstraints(new Path.DefaultGlobalConstraints(
-    //       4.5,   // max velocity m/s
-    //       12.0,  // max acceleration m/s²
-    //       540.0, // max rotational velocity deg/s
-    //       860.0, // max rotational acceleration deg/s²
-    //       0.03,  // end translation tolerance m
-    //       2.0,   // end rotation tolerance deg
-    //       0.2    // intermediate handoff radius m
-    //   ));
-    //
-    //   // No withDefaultShouldFlip() — AutoRoutine handles red/blue mirroring itself
-    //   blinePathBuilder = new FollowPath.Builder(
-    //     swerve,                                        // Subsystem requirement
-    //     () -> localization.getPose(),                  // Pose supplier
-    //     () -> swerve.getRobotRelativeSpeeds(),         // ChassisVelocities supplier
-    //     (speeds) -> swerve.setRobotRelativeAutoSpeeds(speeds), // Drive consumer
-    //     new PIDController(5.0, 0.0, 0.0),             // Translation PID
-    //     new PIDController(5.0, 0.0, 0.0),             // Rotation PID
-    //     new PIDController(2.0, 0.0, 0.0)              // Cross-track PID
-    //   );
+    // BLine-Lib global constraints (no GUI/JSON needed).
+    Path.setDefaultGlobalConstraints(new Path.DefaultGlobalConstraints(
+        4.5,   // max velocity m/s
+        12.0,  // max acceleration m/s²
+        540.0, // max rotational velocity deg/s
+        860.0, // max rotational acceleration deg/s²
+        0.03,  // end translation tolerance m
+        2.0,   // end rotation tolerance deg
+        0.2    // intermediate handoff radius m
+    ));
+
+    // AutoRoutine mirrors its red-source poses itself, so BLine must not flip them again.
+    blinePathBuilder = new FollowPath.Builder(
+        swerve,
+        localization::getPose,
+        swerve::getRobotRelativeSpeeds,
+        swerve::setRobotRelativeAutoSpeeds,
+        new PIDController(5.0, 0.0, 0.0),
+        new PIDController(5.0, 0.0, 0.0),
+        new PIDController(2.0, 0.0, 0.0));
 
     configureBindings();
 
     // Set up point-to-point auto chooser (shows on SmartDashboard as "Auto Chooser")
-    // BLINE DISABLED: blinePathBuilder was the 3rd argument here.
   pointToPointAutos = new PointToPointAutos(
-    swerve, localization, drum, drumSM, hoodSM,
+    swerve, localization, blinePathBuilder, drum, drumSM, hoodSM,
     headingLock, turretLookup, indexer, hopper, intakeRoller, intakePosition);
 
     ElasticLayoutUtil.onBoot();
@@ -202,6 +216,12 @@ public class Robot extends TimedRobot {
     CommandScheduler.getInstance().run();
     field2d.setRobotPose(localization.getPose());
     FieldPoints.publishHeadingLockPoints();
+    field2d.getObject("Red Hub").setPose(
+        new org.wpilib.math.geometry.Pose2d(
+            FieldPoints.getHeadingLockRedPoint(), Rotation2d.kZero));
+    field2d.getObject("Blue Hub").setPose(
+        new org.wpilib.math.geometry.Pose2d(
+            FieldPoints.getHeadingLockBluePoint(), Rotation2d.kZero));
     
 
     // Publish shooter pose (robot-relative offset transformed to field coordinates)
@@ -229,16 +249,30 @@ public class Robot extends TimedRobot {
   public void autonomousInit() {
     // Use the point-to-point auto chooser from SmartDashboard
     autonomousCommand = pointToPointAutos.getSelected();
+    if (autonomousCommand == null) {
+      autonomousCommand = Commands.none().withName("NoAutoSelected");
+    }
+    SmartDashboard.putString("Auto/Selected", autonomousCommand.getName());
+    SmartDashboard.putBoolean("Auto/Running", true);
     CommandScheduler.getInstance().schedule(autonomousCommand);
 
     ElasticLayoutUtil.onEnable();
   }
 
   @Override
-  public void autonomousPeriodic() {}
+  public void autonomousPeriodic() {
+    SmartDashboard.putBoolean(
+        "Auto/Running", autonomousCommand != null && autonomousCommand.isScheduled());
+  }
 
   @Override
-  public void autonomousExit() {}
+  public void autonomousExit() {
+    if (autonomousCommand != null) {
+      autonomousCommand.cancel();
+    }
+    swerve.setFieldRelativeAutoSpeeds(new org.wpilib.math.kinematics.ChassisVelocities());
+    SmartDashboard.putBoolean("Auto/Running", false);
+  }
 
   @Override
   public void teleopInit() {
@@ -358,6 +392,156 @@ public class Robot extends TimedRobot {
 
   @Override
   public void utilityExit() {}
+
+  @Override
+  public void simulationPeriodic() {
+    SmartDashboard.putNumber(
+        "Simulation/Driver/LeftX", hardware.driverController.getLeftX());
+    SmartDashboard.putNumber(
+        "Simulation/Driver/LeftY", hardware.driverController.getLeftY());
+    SmartDashboard.putNumber(
+        "Simulation/Driver/RightX", hardware.driverController.getRightX());
+    SmartDashboard.putNumber(
+        "Simulation/Driver/RightY", hardware.driverController.getRightY());
+    var driverHid = hardware.driverController.getHID();
+    int axisCount = driverHid.getAxesMaximumIndex();
+    double[] rawAxes = new double[axisCount];
+    for (int axis = 0; axis < rawAxes.length; axis++) {
+      rawAxes[axis] = driverHid.getRawAxis(axis);
+    }
+    SmartDashboard.putNumberArray("Simulation/Driver/RawAxes", rawAxes);
+    SmartDashboard.putNumber("Simulation/Driver/RotationInput", getDriverRotationInput());
+    SmartDashboard.putNumber("Simulation/Driver/ShootInput", getDriverShootInput());
+    simulation.periodic();
+  }
+
+  private double getDriverRotationInput() {
+    if (!RobotBase.isSimulation()) {
+      return hardware.driverController.getRightX();
+    }
+
+    var driverHid = hardware.driverController.getHID();
+    int axisCount = driverHid.getAxesMaximumIndex();
+    if (axisCount <= 0) {
+      return 0.0;
+    }
+    int requestedAxis = (int) Math.round(SmartDashboard.getNumber(SIM_ROTATION_AXIS_KEY, 4));
+    if (requestedAxis < 0 || requestedAxis >= axisCount) {
+      return 0.0;
+    }
+    return driverHid.getRawAxis(requestedAxis);
+  }
+
+  private double getDriverShootInput() {
+    if (!RobotBase.isSimulation()) {
+      return hardware.driverController.getRightTriggerAxis();
+    }
+
+    var driverHid = hardware.driverController.getHID();
+    int axisCount = driverHid.getAxesMaximumIndex();
+    int requestedAxis = (int) Math.round(SmartDashboard.getNumber(SIM_SHOOT_AXIS_KEY, 3));
+    if (requestedAxis < 0 || requestedAxis >= axisCount) {
+      return 0.0;
+    }
+    return driverHid.getRawAxis(requestedAxis);
+  }
+
+  private void updatePassingBehavior() {
+    Pose2d robotPose = localization.getPose();
+    // Reevaluate while held so driving to the other side updates the selected pass target without
+    // requiring the driver to release and press the trigger again.
+    activePassTarget = RightTriggerMath.closestPassTarget(
+        robotPose.getTranslation(),
+        FieldPoints.getAlliancePassTargetRight(),
+        FieldPoints.getAlliancePassTargetLeft());
+
+    Transform2d robotToShooter = new Transform2d(
+        FieldPoints.SHOOTER_POSE.getTranslation(),
+        FieldPoints.SHOOTER_POSE.getRotation());
+    double passHeading = RightTriggerMath.targetHeadingDegrees(
+        robotPose, robotToShooter, activePassTarget);
+    double passDistance = RightTriggerMath.targetDistanceMeters(
+        robotPose, robotToShooter, activePassTarget);
+    double passRpm = LookupTable.getPassRpm(passDistance);
+
+    swerve.snapsDriveRequest(passHeading);
+    drumSM.requestRpm(passRpm);
+    hoodSM.requestDegrees(LookupTable.PASS_HOOD_ANGLE_DEG);
+
+    double headingError = HeadingLockMath.errorDegrees(
+        passHeading, robotPose.getRotation().getDegrees());
+    var speeds = swerve.getRobotRelativeSpeeds();
+    double robotSpeed = Math.hypot(speeds.vx, speeds.vy);
+    boolean headingGood = Math.abs(headingError) <= 5.0;
+    boolean slowEnough = robotSpeed < SHOOT_SPEED_THRESHOLD;
+    boolean passReady = headingGood && slowEnough && drum.isAtGoal() && hood.isAtGoal();
+
+    field2d.getObject("Pass Target").setPose(
+        new Pose2d(activePassTarget, Rotation2d.kZero));
+    if (ENABLE_DASHBOARD) {
+      SmartDashboard.putNumberArray(
+          "Pass/TargetPose",
+          new double[] {activePassTarget.getX(), activePassTarget.getY(), passHeading});
+      SmartDashboard.putNumber("Pass/DistanceM", passDistance);
+      SmartDashboard.putNumber("Pass/TargetHeadingDeg", passHeading);
+      SmartDashboard.putNumber("Pass/HeadingError", headingError);
+      SmartDashboard.putBoolean("Pass/HeadingGood", headingGood);
+      SmartDashboard.putNumber("Pass/RPM", passRpm);
+      SmartDashboard.putNumber("Pass/RobotSpeed", robotSpeed);
+      SmartDashboard.putBoolean("Pass/SlowEnough", slowEnough);
+      SmartDashboard.putBoolean("Pass/FlywheelReady", drum.isAtGoal());
+      SmartDashboard.putBoolean("Pass/HoodReady", hood.isAtGoal());
+      SmartDashboard.putBoolean("Pass/Ready", passReady);
+    }
+
+    if (passReady) {
+      indexer.feed();
+      hopper.feed();
+    } else {
+      indexer.stop();
+      hopper.stop();
+    }
+  }
+
+  private void clearPassingState() {
+    activePassTarget = null;
+    if (!ENABLE_DASHBOARD) {
+      return;
+    }
+    SmartDashboard.putBoolean("Driver/PassingActive", false);
+    SmartDashboard.putBoolean("Pass/HeadingGood", false);
+    SmartDashboard.putBoolean("Pass/SlowEnough", false);
+    SmartDashboard.putBoolean("Pass/FlywheelReady", false);
+    SmartDashboard.putBoolean("Pass/HoodReady", false);
+    SmartDashboard.putBoolean("Pass/Ready", false);
+    SmartDashboard.putNumber("Pass/HeadingError", 0.0);
+  }
+
+  private void enterRightTriggerMode(boolean shooting) {
+    rtShootMode = shooting;
+    shootReadyFrames = 0;
+    SmartDashboard.putBoolean("Driver/RT_ShootMode", shooting);
+
+    if (shooting) {
+      clearPassingState();
+      turretLookup.enable();
+      headingLock.enableForAlliance();
+      intakeRoller.intake();
+      hopper.feed();
+      SmartDashboard.putBoolean("Driver/ShootingActive", true);
+      SmartDashboard.putBoolean("Driver/PassingActive", false);
+    } else {
+      SmartDashboard.putBoolean("Driver/ShootingActive", false);
+      turretLookup.disable();
+      headingLock.disableLock();
+      activePassTarget = RightTriggerMath.closestPassTarget(
+          localization.getPose().getTranslation(),
+          FieldPoints.getAlliancePassTargetRight(),
+          FieldPoints.getAlliancePassTargetLeft());
+      updatePassingBehavior();
+      SmartDashboard.putBoolean("Driver/PassingActive", true);
+    }
+  }
 
   private void registerNamedCommands() {
     // Indexer states
@@ -532,7 +716,7 @@ intakePosition.deploy();
                     swerve.driveTeleop(
                         hardware.driverController.getLeftX(),
                         hardware.driverController.getLeftY(),
-                        hardware.driverController.getRightX());
+                        getDriverRotationInput());
                   }
                 })
             .withName("DefaultSwerveCommand"));
@@ -540,26 +724,14 @@ intakePosition.deploy();
 
 
 
-    hardware.driverController.rightTrigger(0.1).whileTrue(
+    Trigger shootTrigger = RobotBase.isSimulation()
+        ? new Trigger(() -> getDriverShootInput() > 0.1)
+        : hardware.driverController.rightTrigger(0.1);
+    shootTrigger.whileTrue(
       org.wpilib.command2.Commands.startEnd(
         () -> {
           double robotX = localization.getPose().getX();
-          boolean shooting = FieldPoints.isInShootZone(robotX);
-          rtShootMode = shooting;
-          if (ENABLE_DASHBOARD) SmartDashboard.putBoolean("Driver/RT_ShootMode", shooting);
-          shootReadyFrames = 0;
-          if (shooting) {
-            turretLookup.enable();
-            headingLock.enableForAlliance();
-            intakeRoller.intake();
-            hopper.feed();
-            if (ENABLE_DASHBOARD) SmartDashboard.putBoolean("Driver/ShootingActive", true);
-          } else {
-            double passHeading = FmsSubsystem.isRedAlliance() ? 0.0 : 180.0;
-            swerve.snapsDriveRequest(passHeading);
-            hopper.feed();
-            if (ENABLE_DASHBOARD) SmartDashboard.putBoolean("Driver/PassingActive", true);
-          }
+          enterRightTriggerMode(FieldPoints.isInShootZone(robotX));
         },
         () -> {
           boolean wasShootMode = rtShootMode;
@@ -577,17 +749,25 @@ intakePosition.deploy();
             if (ENABLE_DASHBOARD) SmartDashboard.putBoolean("Driver/ShootingActive", false);
           } else {
             swerve.normalDriveRequest();
-            drum.stop();
+            drumSM.requestOff();
+            hoodSM.requestOff();
             hood.setAngleDegrees(0);
             indexer.stop();
             intakeRoller.stop();
             hopper.stop();
             intakePosition.deploy();
-            if (ENABLE_DASHBOARD) SmartDashboard.putBoolean("Driver/PassingActive", false);
+            clearPassingState();
+            if (ENABLE_DASHBOARD) {
+              SmartDashboard.putBoolean("Driver/PassingActive", false);
+            }
           }
         }
       ).alongWith(
         org.wpilib.command2.Commands.run(() -> {
+          boolean desiredShootMode = FieldPoints.isInShootZone(localization.getPose().getX());
+          if (desiredShootMode != rtShootMode) {
+            enterRightTriggerMode(desiredShootMode);
+          }
           boolean shootMode = rtShootMode;
 
           if (shootMode) {
@@ -618,29 +798,7 @@ intakePosition.deploy();
               hopper.stop();
             }
           } else {
-            double passHeading = FmsSubsystem.isRedAlliance() ? 0.0 : 180.0;
-            //
-            swerve.snapsDriveRequest(passHeading);
-            drum.spinDrum(3500);
-            hood.setAngleDegrees(-40);
-
-            double currentHeading = localization.getPose().getRotation().getDegrees();
-            double headingError = passHeading - currentHeading;
-            headingError = ((headingError + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
-            boolean headingGood = Math.abs(headingError) <= 5.0;
-
-            if (ENABLE_DASHBOARD) {
-              SmartDashboard.putNumber("Pass/RPM", 2500);
-              SmartDashboard.putNumber("Pass/HeadingError", headingError);
-              SmartDashboard.putBoolean("Pass/HeadingGood", headingGood);
-            }
-            if (headingGood) {
-              indexer.feed();
-              hopper.feed();
-            } else {
-              indexer.stop();
-              hopper.stop();
-            }
+            updatePassingBehavior();
           }
         })
       ).alongWith(

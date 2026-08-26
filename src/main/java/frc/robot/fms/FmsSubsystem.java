@@ -3,6 +3,7 @@ package frc.robot.fms;
 import dev.doglog.DogLog;
 import org.wpilib.driverstation.MatchState;
 import org.wpilib.driverstation.Alliance;
+import org.wpilib.framework.RobotBase;
 import frc.robot.util.scheduling.LifecycleSubsystem;
 import frc.robot.util.scheduling.SubsystemPriority;
 
@@ -12,9 +13,10 @@ public class FmsSubsystem extends LifecycleSubsystem {
   }
 
   public static boolean isRedAlliance() {
-    // When not connected to FMS (off-field) DriverStation may return empty.
-    // Default to Alliance.RED when FMS is unavailable.
-    Alliance alliance = MatchState.getAlliance().orElse(Alliance.RED);
+    // Desktop simulation starts at the blue pose, so an unset simulation alliance must also be
+    // blue. Preserve the existing red fallback on the real robot when FMS is unavailable.
+    Alliance defaultAlliance = RobotBase.isSimulation() ? Alliance.BLUE : Alliance.RED;
+    Alliance alliance = MatchState.getAlliance().orElse(defaultAlliance);
 
     return alliance == Alliance.RED;
   }

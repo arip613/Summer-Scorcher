@@ -4,6 +4,7 @@ import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.math.geometry.Rotation2d;
 import org.wpilib.math.geometry.Transform2d;
 import org.wpilib.math.geometry.Translation2d;
+import org.wpilib.framework.RobotBase;
 import frc.robot.fms.FmsSubsystem;
 import org.wpilib.smartdashboard.SmartDashboard;
 import frc.robot.localization.LocalizationSubsystem;
@@ -23,7 +24,7 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
   private static final String LIMELIGHT_LEFT = "limelight-left";
   // Only refine with tx once the pose-based aim already agrees within this much.
   // Keeps a bad camera calibration from silently overriding a good pose.
-  private static final double TX_SWITCH_DEG = 360;
+  private static final double TX_SWITCH_DEG = 10.0;
   private static final int[] RED_TAG_PRIORITY = {10, 5, 2};
   private static final int[] BLUE_TAG_PRIORITY = {26, 21, 18};
   
@@ -32,8 +33,8 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
 
   private static final double HEADING_TOLERANCE_DEG = 2;
   private double lastTargetAngleDeg = 0.0;
-  private static final double HEADING_SETTLE_TIME_S = 0;
-  private double headingOnTargetStartTime = 0;
+  private static final double HEADING_SETTLE_TIME_S = 0.10;
+  private double headingOnTargetStartTime = -1.0;
   private static final double HEADING_TIMEOUT_S = 1.3;
   private double headingLockStartTime = -1.0;
 
@@ -101,6 +102,7 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
   public void enableRedLock() {
     if (getState() != HeadingLockState.RED_LOCK) {
       headingLockStartTime = org.wpilib.system.Timer.getTimestamp();
+      headingOnTargetStartTime = -1.0;
     }
     setStateFromRequest(HeadingLockState.RED_LOCK);
   }
@@ -108,12 +110,14 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
   public void enableBlueLock() {
     if (getState() != HeadingLockState.BLUE_LOCK) {
       headingLockStartTime = org.wpilib.system.Timer.getTimestamp();
+      headingOnTargetStartTime = -1.0;
     }
     setStateFromRequest(HeadingLockState.BLUE_LOCK);
   }
 
   public void disableLock() {
     headingLockStartTime = -1.0;
+    headingOnTargetStartTime = -1.0;
     setStateFromRequest(HeadingLockState.DISABLED);
     swerve.normalDriveRequest();
   }
@@ -148,6 +152,7 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
 
   private void faceTargetPoseBased(Translation2d targetPoint) {
 
+    var robotPose = localization.getPose();
     var shooterPose = getShooterFieldPose();
     double dx = targetPoint.getX() - shooterPose.getX();
     double dy = targetPoint.getY() - shooterPose.getY();
@@ -157,21 +162,29 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
       return;
     }
 
-    double angleToTargetDeg = Math.toDegrees(Math.atan2(dy, dx));
-
-    double poseAngle = angleToTargetDeg + operatorOverrideDeg;
-    double currentHeading = localization.getPose().getRotation().getDegrees();
-    double poseError = poseAngle - currentHeading;
-    poseError = ((poseError + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
+    double geometricPoseAngle = HeadingLockMath.poseTargetDegrees(
+        robotPose,
+        new Transform2d(
+            FieldPoints.SHOOTER_POSE.getTranslation(), FieldPoints.SHOOTER_POSE.getRotation()),
+        targetPoint,
+        0.0);
+    double poseAngle = geometricPoseAngle + operatorOverrideDeg;
+    double currentHeading = robotPose.getRotation().getDegrees();
+    double poseError = HeadingLockMath.errorDegrees(poseAngle, currentHeading);
 
     Double txDegrees = null;
     if (useTxCheck && Math.abs(poseError) <= TX_SWITCH_DEG) {
-      txDegrees = getPriorityTagTx();
+      // There is no Limelight process in desktop simulation. Generate the ideal camera tx from
+      // field geometry once the target is inside the same acquisition window used on the robot.
+      txDegrees = RobotBase.isSimulation()
+          ? HeadingLockMath.simulatedTxDegrees(geometricPoseAngle, currentHeading)
+          : getPriorityTagTx();
     }
 
     double finalAngle = poseAngle;
     if (txDegrees != null) {
-      finalAngle = currentHeading - txDegrees + operatorOverrideDeg;
+      finalAngle = HeadingLockMath.visionTargetDegrees(
+          currentHeading, txDegrees, operatorOverrideDeg);
     }
 
 
@@ -180,6 +193,7 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
     SmartDashboard.putNumber("HeadingLock/PoseTargetDeg", poseAngle);
     SmartDashboard.putNumber("HeadingLock/PoseErrorDeg", poseError);
     SmartDashboard.putBoolean("HeadingLock/UsingTx", txDegrees != null);
+    SmartDashboard.putBoolean("HeadingLock/SimulatedTx", txDegrees != null && RobotBase.isSimulation());
     if (txDegrees != null) {
       SmartDashboard.putNumber("HeadingLock/TxDeg", txDegrees);
     }
@@ -229,9 +243,10 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
     }
 
     double currentDeg = localization.getPose().getRotation().getDegrees();
-    double error = lastTargetAngleDeg - currentDeg;
-    error = ((error + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
-    boolean onTarget = Math.abs(error) <= HEADING_TOLERANCE_DEG || timedOut;
+    double error = HeadingLockMath.errorDegrees(lastTargetAngleDeg, currentDeg);
+    // A timeout is diagnostic only. It must never report aligned and allow a shot while
+    // the drivetrain is still pointed outside the tolerance.
+    boolean onTarget = Math.abs(error) <= HEADING_TOLERANCE_DEG;
     SmartDashboard.putBoolean("HeadingLock/OnTarget", onTarget);
     SmartDashboard.putNumber("HeadingLock/HeadingErrorDeg", error);
 

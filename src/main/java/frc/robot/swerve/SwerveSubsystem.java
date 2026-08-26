@@ -10,6 +10,7 @@ import org.wpilib.driverstation.Alliance;
 import org.wpilib.math.linalg.Matrix;
 import org.wpilib.math.linalg.VecBuilder;
 import org.wpilib.math.geometry.Rotation2d;
+import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.math.geometry.Translation2d;
 import org.wpilib.math.interpolation.InterpolatingDoubleTreeMap;
 import org.wpilib.math.kinematics.ChassisVelocities;
@@ -41,6 +42,8 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
   private static final double RIGHT_X_DEADBAND = 0.15;
 
   private static final double SIM_LOOP_PERIOD = 0.005; // 5 ms
+  private static final double SIM_MAX_TRANSLATIONAL_ACCEL = 10.0;
+  private static final double SIM_MAX_ANGULAR_ACCEL = 30.0;
 
   private static final PhoenixPIDController ORIGINAL_HEADING_PID =
       RobotConfig.get().swerve().snapController();
@@ -73,6 +76,9 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
 
   private double lastSimTime;
   private Notifier simNotifier = null;
+  private final Object simPoseLock = new Object();
+  private Pose2d simPose = Pose2d.kZero;
+  private ChassisVelocities simFieldVelocity = new ChassisVelocities();
 
   private SwerveDriveState drivetrainState = new SwerveDriveState();
   private ChassisVelocities robotRelativeSpeeds = new ChassisVelocities();
@@ -151,6 +157,9 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
     super(SubsystemPriority.SWERVE, SwerveState.TELEOP);
 
     if (Utils.isSimulation()) {
+      // Phoenix 26.50.0-alpha-1's desktop odometry thread continuously waits on status frames
+      // that never arrive in the 2027 alpha stack. Our simulation pose below replaces it.
+      drivetrain.getOdometryThread().stop();
       startSimThread();
     }
 
@@ -169,7 +178,9 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
     driveToAngle.HeadingController.enableContinuousInput(-Math.PI, Math.PI);
     driveToAngle.HeadingController.setTolerance(0.01);
 
-    drivetrain.setStateStdDevs(new Matrix<>(VecBuilder.fill(0.003, 0.003, 0.002)));
+    // Use CTRE's estimator baseline instead of treating wheel/gyro odometry as nearly perfect.
+    // This lets accepted global measurements correct ordinary wheel slip through normal fusion.
+    drivetrain.setStateStdDevs(new Matrix<>(VecBuilder.fill(0.1, 0.1, 0.1)));
     timeSinceAutoSpeeds.start();
   }
 
@@ -240,9 +251,23 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
 
   @Override
   protected void collectInputs() {
-    drivetrainState = drivetrain.getState();
-    robotRelativeSpeeds = drivetrainState.Velocity;
-    fieldRelativeSpeeds = calculateFieldRelativeSpeeds();
+    if (Utils.isSimulation()) {
+      synchronized (simPoseLock) {
+        drivetrainState.Pose = simPose;
+        fieldRelativeSpeeds = simFieldVelocity;
+        double cos = simPose.getRotation().getCos();
+        double sin = simPose.getRotation().getSin();
+        robotRelativeSpeeds = new ChassisVelocities(
+            simFieldVelocity.vx * cos + simFieldVelocity.vy * sin,
+            -simFieldVelocity.vx * sin + simFieldVelocity.vy * cos,
+            simFieldVelocity.omega);
+        drivetrainState.Velocity = robotRelativeSpeeds;
+      }
+    } else {
+      drivetrainState = drivetrain.getState();
+      robotRelativeSpeeds = drivetrainState.Velocity;
+      fieldRelativeSpeeds = calculateFieldRelativeSpeeds();
+    }
     teleopSlowModePercent = ELEVATOR_HEIGHT_TO_SLOW_MODE.get(elevatorHeight);
   }
 
@@ -403,8 +428,128 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
               lastSimTime = currentTime;
 
               drivetrain.updateSimState(deltaTime, RobotController.getBatteryVoltage());
+              updateSimPose(deltaTime);
             });
     simNotifier.startPeriodic(SIM_LOOP_PERIOD);
+  }
+
+  /**
+   * Integrates chassis ground truth for the 2027 alpha desktop stack.
+   *
+   * <p>Phoenix still simulates each module, but its alpha Pigeon/odometry status stream does not
+   * advance reliably on desktop. Feeding an acceleration-limited chassis pose back into Phoenix
+   * keeps localization and heading controllers closed-loop until that vendor issue is resolved.
+   */
+  private void updateSimPose(double deltaTime) {
+    ChassisVelocities requested = getRequestedSimFieldVelocity();
+    if (!RobotState.isEnabled()) {
+      requested = new ChassisVelocities();
+    }
+
+    simFieldVelocity = new ChassisVelocities(
+        approach(
+            simFieldVelocity.vx,
+            requested.vx,
+            SIM_MAX_TRANSLATIONAL_ACCEL * deltaTime),
+        approach(
+            simFieldVelocity.vy,
+            requested.vy,
+            SIM_MAX_TRANSLATIONAL_ACCEL * deltaTime),
+        approach(
+            simFieldVelocity.omega,
+            requested.omega,
+            SIM_MAX_ANGULAR_ACCEL * deltaTime));
+
+    synchronized (simPoseLock) {
+      simPose = new Pose2d(
+          simPose.getX() + simFieldVelocity.vx * deltaTime,
+          simPose.getY() + simFieldVelocity.vy * deltaTime,
+          simPose.getRotation().plus(
+              Rotation2d.fromRadians(simFieldVelocity.omega * deltaTime)));
+
+    }
+  }
+
+  private ChassisVelocities getRequestedSimFieldVelocity() {
+    ChassisVelocities base = switch (getState()) {
+      case AUTO, AUTO_SNAPS -> autoSpeeds;
+      case TELEOP, TELEOP_SNAPS ->
+          !timeSinceAutoSpeeds.hasElapsed(0.1) ? autoSpeeds : teleopSpeeds;
+    };
+
+    boolean facingAngle = getState() == SwerveState.AUTO_SNAPS
+        || (getState() == SwerveState.TELEOP_SNAPS && teleopSpeeds.omega == 0.0);
+    if (!facingAngle) {
+      return base;
+    }
+
+    double errorRadians = Math.toRadians(
+        frc.robot.AutoMovements.HeadingLockMath.errorDegrees(
+            goalSnapAngle, simPose.getRotation().getDegrees()));
+    double maxRate = getState() == SwerveState.TELEOP_SNAPS
+        ? TELEOP_MAX_ANGULAR_RATE * teleopSlowModePercent
+        : maxAngularRate;
+    double omega = Math.max(
+        -maxRate,
+        Math.min(maxRate, ORIGINAL_HEADING_PID.getP() * errorRadians));
+    return new ChassisVelocities(base.vx, base.vy, omega);
+  }
+
+  private static double approach(double current, double target, double maxDelta) {
+    return current + Math.max(-maxDelta, Math.min(maxDelta, target - current));
+  }
+
+  /** Resets both Phoenix odometry and desktop-simulation ground truth. */
+  public void resetPose(Pose2d pose) {
+    synchronized (simPoseLock) {
+      simPose = pose;
+      simFieldVelocity = new ChassisVelocities();
+      drivetrainState.Pose = pose;
+      if (!Utils.isSimulation()) {
+        drivetrain.resetPose(pose);
+      }
+    }
+  }
+
+  /** Resets heading while preserving translation in both real and simulated odometry. */
+  public void resetRotation(Rotation2d rotation) {
+    if (Utils.isSimulation()) {
+      synchronized (simPoseLock) {
+        resetPose(new Pose2d(simPose.getTranslation(), rotation));
+      }
+    } else {
+      drivetrain.resetRotation(rotation);
+    }
+  }
+
+  public Pose2d getSimPose() {
+    synchronized (simPoseLock) {
+      return simPose;
+    }
+  }
+
+  public ChassisVelocities getSimFieldVelocity() {
+    synchronized (simPoseLock) {
+      return simFieldVelocity;
+    }
+  }
+
+  /** Approximate drivetrain battery load without blocking on unavailable alpha CAN signals. */
+  public double getSimEstimatedSupplyCurrentAmps() {
+    synchronized (simPoseLock) {
+      double translationFraction = Math.min(1.0, Math.hypot(simFieldVelocity.vx, simFieldVelocity.vy) / MaxSpeed);
+      double rotationFraction = Math.min(1.0, Math.abs(simFieldVelocity.omega) / maxAngularRate);
+      return 8.0 + 120.0 * translationFraction + 60.0 * rotationFraction;
+    }
+  }
+
+  /** Stops background native resources created by the drivetrain simulation. */
+  public void closeSimulation() {
+    if (simNotifier != null) {
+      simNotifier.close();
+      simNotifier = null;
+    }
+    drivetrain.close();
   }
 
   public void setElevatorHeight(double height) {

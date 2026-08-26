@@ -4,6 +4,9 @@ import org.wpilib.smartdashboard.SendableChooser;
 import org.wpilib.smartdashboard.SmartDashboard;
 import org.wpilib.command2.Command;
 import org.wpilib.command2.Commands;
+import org.wpilib.math.geometry.Pose2d;
+import org.wpilib.math.geometry.Rotation2d;
+import frc.robot.AutoMovements.FieldPoints;
 import frc.robot.AutoMovements.HeadingLock;
 import frc.robot.FlywheelSubsystem.Drum;
 import frc.robot.FlywheelSubsystem.LookupTable;
@@ -15,15 +18,15 @@ import frc.robot.Intake.IntakePosition;
 import frc.robot.Intake.intaker;
 import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
-// BLINE DISABLED (BLine-Lib v0.9.1 targets 2026 WPILib):
-// import frc.robot.lib.BLine.FollowPath;
+import frc.robot.lib.BLine.FollowPath;
+import java.util.Map;
 
 /**
  * All point-to-point autonomous routines live here.
  *
  * ===== HOW TO ADD A NEW AUTO =====
  * 1. Add a new method below (copy an existing one as a template)
- * 2. Use AutoRoutine.create(swerve, localization) to start building
+ * 2. Use AutoRoutine.create(swerve, localization, pathBuilder) to start building
  * 3. Chain steps:
  *      .startAt(x, y, deg)            - set starting pose
  *      .driveTo(x, y, deg)            - drive to a field pose
@@ -46,7 +49,7 @@ import frc.robot.swerve.SwerveSubsystem;
 public class PointToPointAutos {
   private final SwerveSubsystem swerve;
   private final LocalizationSubsystem localization;
-  // BLINE DISABLED: private final FollowPath.Builder pathBuilder;
+  private final FollowPath.Builder pathBuilder;
   private final Drum drum;
   private final DrumStateMachine drumSM;
   private final HoodStateMachine hoodSM;
@@ -62,7 +65,7 @@ public class PointToPointAutos {
   public PointToPointAutos(
       SwerveSubsystem swerve,
       LocalizationSubsystem localization,
-      // BLINE DISABLED: FollowPath.Builder pathBuilder,
+      FollowPath.Builder pathBuilder,
       Drum drum,
       DrumStateMachine drumSM,
       HoodStateMachine hoodSM,
@@ -74,7 +77,7 @@ public class PointToPointAutos {
       IntakePosition intakePosition) {
     this.swerve = swerve;
     this.localization = localization;
-    // BLINE DISABLED: this.pathBuilder = pathBuilder;
+    this.pathBuilder = pathBuilder;
     this.drum = drum;
     this.drumSM = drumSM;
     this.hoodSM = hoodSM;
@@ -89,8 +92,8 @@ public class PointToPointAutos {
     chooser.setDefaultOption("Do Nothing", Commands.none());
     chooser.addOption("Red Right", RedRight());
     chooser.addOption("Red Left", RedLeft());
-    chooser.addOption("Blue Left", BlueRight());
-    chooser.addOption("Blue Right", BlueLeft());
+    chooser.addOption("Blue Left", BlueLeft());
+    chooser.addOption("Blue Right", BlueRight());
     chooser.addOption("Blue Mid", BlueMiddle());
     chooser.addOption("Red Mid", RedMiddle());
       chooser.addOption("Red Mid Depot", RedMiddleDepot());
@@ -119,6 +122,38 @@ public class PointToPointAutos {
   private static final double SHOOT_SPEED_THRESHOLD = 0.5;
   private static final int SHOOT_READY_FRAME_THRESHOLD = 2;
   private int autoShootReadyFrames = 0;
+
+  /** Offset applied after a right-side pose has been mirrored onto the red-left side. */
+  private record PoseTweak(double xMeters, double yMeters, double headingDegrees) {
+    private Pose2d apply(Pose2d pose) {
+      return new Pose2d(
+          pose.getX() + xMeters,
+          pose.getY() + yMeters,
+          pose.getRotation().plus(Rotation2d.fromDegrees(headingDegrees)));
+    }
+  }
+
+  private static final PoseTweak NO_TWEAK = new PoseTweak(0.0, 0.0, 0.0);
+
+  /*
+   * Optional adjustments for the left-side copy. Keys match the names in SideAuto below.
+   * Tweaks use field coordinates after the Y mirror. For example:
+   *
+   * Map.entry("firstShoot", new PoseTweak(0.05, -0.02, 2.0))
+   *
+   * A tweak is also alliance-mirrored into Blue Right, keeping both alliance autos consistent.
+   */
+  private static final Map<String, PoseTweak> LEFT_AUTO_TWEAKS = Map.ofEntries();
+
+  private static Pose2d sidePose(
+      String name, double x, double y, double headingDegrees, boolean leftSide) {
+    Pose2d rightPose = new Pose2d(x, y, Rotation2d.fromDegrees(headingDegrees));
+    if (!leftSide) {
+      return rightPose;
+    }
+    Pose2d mirrored = FieldPoints.mirrorPoseLeftRight(rightPose);
+    return LEFT_AUTO_TWEAKS.getOrDefault(name, NO_TWEAK).apply(mirrored);
+  }
 
   /** Same as teleop right trigger press → hold → release, as a command. */
   private Command startShooting() {
@@ -207,66 +242,46 @@ public class PointToPointAutos {
 
 
 
-private Command LeftAuto(boolean mirror) {
-  var routine = mirror
-      ? AutoRoutine.createMirrored(swerve, localization)
-      : AutoRoutine.create(swerve, localization);
-  return routine
-      .startAt(12.16, 0.638, 270)
-      .run(startIntaking()) // don't cut off intaking early if we get stuck on the first waypoint
-    .driveToAll(9.2, 0.70, 245)
-    .driveToAll(9.2, 3.55, 245)
-    .driveToAll(9.71, 2.27, 10, 2.6)
-    .driveToAll(14.7, 2.27, 130, 2.6)
-    .driveToAll(15.7, 2.82, 130)
-    .runFor(3, startShooting())
-    .run(stopShooting())
-    .driveToAll(10.71, 2.27, 0)
-    .driveToAll(9.51, 1.66, 270, 2.7)
-    .driveToAll(9.38, 4.03, 270, 2.7)
-    .driveToAll(10.58, 4.02, 130, 2.7)
-    .driveToAll(9.71, 2.52, 90)
-    .driveToAll(15.7, 2.82, 130)
-    .runFor(3, startShooting())
-    .run(stopAll())
-      .build()
-      .withName(mirror ? "Blue Right" : "Red Left");
-}
-
-
-
-  private Command RightAuto(boolean mirror) {
-    var routine = mirror
-        ? AutoRoutine.createMirrored(swerve, localization)
-        : AutoRoutine.create(swerve, localization);
-    return routine
-        .startAt(12.16, 7.383, 90)
+  /**
+   * Defines one red-right source path. The left-side autos are generated by reflecting every pose
+   * across the field width, then applying any named entries from LEFT_AUTO_TWEAKS.
+   */
+  private Command SideAuto(boolean mirrorAlliance, boolean leftSide) {
+    var routine = mirrorAlliance
+        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder)
+        : AutoRoutine.create(swerve, localization, pathBuilder);
+    Command command = routine
+        .startAt(sidePose("start", 12.16, 7.383, 90, leftSide))
         .run(startIntaking()) // don't cut off intaking early if we get stuck on the first waypoint
-        .driveToAll(8.88, 7.321, 115)
-        .driveToAll(8.88, 4.471, 115)
-        .driveToAll(9.71, 5.67, 0,2.6)
-        .driveToAll(14.7, 5.67, 180,2.6)
-        .driveToAll(15.7, 5.2, 230)
+        .driveToAll(sidePose("firstPickupOuter", 8.88, 7.321, 115, leftSide))
+        .driveToAll(sidePose("firstPickupInner", 8.88, 4.471, 115, leftSide))
+        .driveToAll(sidePose("lineupToBump", 9.71, 5.67, 270, leftSide), 2.6)
+        .driveToAll(sidePose("firstShootApproach", 13.2, 5.67, 270, leftSide), 2.6)
+        .driveToAll(sidePose("firstShoot", 13.7, 5.2, 195, leftSide))
         .runFor(3, startShooting())
         .run(stopShooting())
-        .driveToAll(10.71, 5.75, 0)
-        .driveToAll(9.51, 6.36, 90, 2.7)
-        .driveToAll(9.38, 3.99, 90, 2.7)
-        .driveToAll(10.58, 4, 230, 2.7)
-        .driveToAll(9.71, 5.5, 270)
-            .driveToAll(13.39, 5.67, 180)
-
-        .driveToAll(15.7, 5.2, 230)
+        .driveToAll(sidePose("trenchEntry", 13.71, 7.430, 0, leftSide))
+        .driveToAll(sidePose("trenchExit", 10.71, 7.430, 0, leftSide))
+        .driveToAll(sidePose("secondPickupOuter", 9.51, 6.36, 90, leftSide), 2.7)
+        .driveToAll(sidePose("secondPickupInner", 9.38, 3.99, 90, leftSide), 2.7)
+        .driveToAll(sidePose("secondPickupHubSlam", 10.58, 4.0, 269, leftSide), 2.7)
+        .driveToAll(sidePose("lineupToBump2", 9.71, 5.67, 270, leftSide))
+        .driveToAll(sidePose("secondShootApproach", 13.2, 5.67, 270, leftSide))
+        .driveToAll(sidePose("secondShoot", 13.7, 5.2, 270, leftSide))
         .runFor(3, startShooting())
         .run(stopAll())
-        .build()
-        .withName(mirror ? "Blue Left" : "Red Right");
+        .build();
+
+    String name = mirrorAlliance
+        ? (leftSide ? "Blue Right" : "Blue Left")
+        : (leftSide ? "Red Left" : "Red Right");
+    return command.withName(name);
   }
 
   private Command MiddleAuto(boolean mirror) {
     var routine = mirror
-        ? AutoRoutine.createMirrored(swerve, localization)
-        : AutoRoutine.create(swerve, localization);
+        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder)
+        : AutoRoutine.create(swerve, localization, pathBuilder);
     return routine
         .startAt(13.02, 4.05, 180)
         .driveToAll(14.9, 4.05, 180)
@@ -279,8 +294,8 @@ private Command LeftAuto(boolean mirror) {
 
   private Command MiddleAutoDepot(boolean mirror) {
     var routine = mirror
-        ? AutoRoutine.createMirrored(swerve, localization)
-        : AutoRoutine.create(swerve, localization);
+        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder)
+        : AutoRoutine.create(swerve, localization, pathBuilder);
     return routine
         .startAt(13.02, 4.05, 180)
         .run(startIntaking()) 
@@ -308,12 +323,10 @@ private Command LeftAuto(boolean mirror) {
 
 
 
-  private Command RedRight() { return RightAuto(false); }
-  private Command BlueRight() { return RightAuto(true); }
-
-
-  private Command RedLeft() { return LeftAuto(false); }
-  private Command BlueLeft() { return LeftAuto(true); }
+  private Command RedRight() { return SideAuto(false, false); }
+  private Command RedLeft() { return SideAuto(false, true); }
+  private Command BlueLeft() { return SideAuto(true, false); }
+  private Command BlueRight() { return SideAuto(true, true); }
   private Command RedMiddle() { return MiddleAuto(false); }
   private Command BlueMiddle() { return MiddleAuto(true); }
   private Command BlueMiddleDepot() {return MiddleAutoDepot(true);}
