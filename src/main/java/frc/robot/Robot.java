@@ -23,6 +23,7 @@ import frc.robot.AutoMovements.RightTriggerMath;
 import frc.robot.AutoMovements.OutpostSetpoint;
 import frc.robot.FlywheelSubsystem.DistanceCalc;
 import frc.robot.FlywheelSubsystem.LookupTable;
+import frc.robot.Intake.BeamBreak;
 import frc.robot.Intake.IntakePosition;
 import frc.robot.Intake.intaker;
 import frc.robot.FlywheelSubsystem.Drum;
@@ -93,6 +94,8 @@ public class Robot extends TimedRobot {
       hardware.intakeRollerMotorA,
       hardware.intakeRollerMotorB);
   private final IntakePosition intakePosition = new IntakePosition(hardware.intakePivotMotor);
+  @SuppressWarnings("unused")
+  private final BeamBreak beamBreak = new BeamBreak(hardware.beamBreakSensor);
   private final OutpostSetpoint outpost = new OutpostSetpoint(localization, swerve, intakePosition, intakeRoller);
   private final DrumStateMachine drumSM = new DrumStateMachine(drum);
   @SuppressWarnings("unused")

@@ -3,6 +3,7 @@ package frc.robot;
 import org.wpilib.command2.button.CommandGamepad;
 import com.ctre.phoenix6.CANBus;
 import com.ctre.phoenix6.Utils;
+import com.ctre.phoenix6.hardware.CANrange;
 import com.ctre.phoenix6.hardware.TalonFX;
 import frc.robot.vision.limelight.Limelight;
 import frc.robot.vision.limelight.LimelightModel;
@@ -20,6 +21,9 @@ public class Hardware {
       Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(0);
   private static final CANBus RIO =
       Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(4);
+  /** can_s1 carries the CANrange used as a beam break. */
+  private static final CANBus SENSOR_BUS =
+      Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(1);
 
   public final CommandGamepad driverController = new CommandGamepad(0);
   public final CommandGamepad operatorController   = new CommandGamepad(1); 
@@ -35,6 +39,9 @@ public class Hardware {
   public final TalonFX intakePivotMotor  = new TalonFX(28, CANIVORE);
   public final TalonFX intakeRollerMotorA = new TalonFX(31, RIO);   
   public final TalonFX intakeRollerMotorB     = new TalonFX(32, RIO);
+
+  /** CANrange on can_s1, ID 63, used as a beam break. */
+  public final CANrange beamBreakSensor = new CANrange(63, SENSOR_BUS);
 
   public final Limelight leftLimelight  = new Limelight("left",  LimelightState.TAGS, LimelightModel.FOUR);
   public final Limelight rightLimelight = new Limelight("right", LimelightState.TAGS, LimelightModel.FOUR);
