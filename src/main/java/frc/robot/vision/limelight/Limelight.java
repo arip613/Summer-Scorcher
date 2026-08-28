@@ -170,14 +170,17 @@ public class Limelight extends StateMachine<LimelightState> {
       return reject("MT2 tagCount 0");
     }
 
-    if (mT2Estimate.rawFiducials.length == 1) {
-      // LimelightHelpers allocates this array to tagCount but leaves it full of nulls whenever the
-      // botpose array length != 11 + 7*tagCount, so the element must be null-checked. Dereferencing
-      // it blindly throws out of collectInputs(), and CommandScheduler does not catch that.
-      var fiducial = mT2Estimate.rawFiducials[0];
-      if (fiducial != null && fiducial.ambiguity >= 0.7) {
-        return reject("ambiguity " + String.format("%.2f", fiducial.ambiguity));
-      }
+    // Ambiguity is deliberately NOT a rejection criterion here. MegaTag2 resolves the single-tag
+    // pose using the yaw pushed via SetRobotOrientation, so it does not suffer the two-solution
+    // problem that rawFiducials.ambiguity measures -- that value comes from the raw MT1-style
+    // solve, where a tag viewed near head-on is always ambiguous. Live data had the right camera
+    // reporting 0.94 on a clean tag-10 sighting at 3.2 m and every frame was being discarded.
+    // Published for diagnostics only.
+    //
+    // Null-checked because LimelightHelpers allocates this array to tagCount but leaves it full of
+    // nulls whenever the botpose array length != 11 + 7*tagCount.
+    if (mT2Estimate.rawFiducials.length >= 1 && mT2Estimate.rawFiducials[0] != null) {
+      SmartDashboard.putNumber(debugKey("Ambiguity"), mT2Estimate.rawFiducials[0].ambiguity);
     }
 
     if (FeatureFlags.VISION_STALE_DATA_CHECK.getAsBoolean()) {

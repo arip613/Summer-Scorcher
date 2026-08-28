@@ -4,7 +4,8 @@ import frc.robot.util.scheduling.SubsystemPriority;
 import frc.robot.util.state_machines.StateMachine;
 
 public class DrumStateMachine extends StateMachine<DrumStateMachine.State> {
-  public enum State { OFF, SPIN_RPM }
+  /** TUNING hands the motors to {@link DrumTuner}; this state machine commands nothing in it. */
+  public enum State { OFF, SPIN_RPM, TUNING }
 
   private final Drum drum;
   private double targetRpm = 0.0;
@@ -19,6 +20,7 @@ public class DrumStateMachine extends StateMachine<DrumStateMachine.State> {
     this.targetRpm = rpm;
     setStateFromRequest(State.SPIN_RPM);
   }
+  public void requestTuning() { setStateFromRequest(State.TUNING); }
 
   @Override
   protected State getNextState(State current) { return current; }
@@ -37,6 +39,7 @@ public class DrumStateMachine extends StateMachine<DrumStateMachine.State> {
     switch (newState) {
       case OFF -> drum.stop();
       case SPIN_RPM -> drum.spinDrum(targetRpm);
+      case TUNING -> drum.stop();
     }
   }
 }

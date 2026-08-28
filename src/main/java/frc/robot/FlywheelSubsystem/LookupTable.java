@@ -7,11 +7,13 @@ import org.wpilib.math.geometry.Rotation2d;
 import org.wpilib.math.geometry.Translation2d;
 import org.wpilib.math.geometry.Twist2d;
 import org.wpilib.math.kinematics.ChassisVelocities;
+import org.wpilib.command2.Command;
+import org.wpilib.command2.Commands;
+import org.wpilib.driverstation.RobotState;
+import org.wpilib.networktables.NetworkTableInstance;
 import org.wpilib.smartdashboard.SmartDashboard;
-import frc.robot.fms.FmsSubsystem;
 import frc.robot.util.scheduling.SubsystemPriority;
 import frc.robot.util.state_machines.StateMachine;
-import frc.robot.vision.limelight.LimelightHelpers;
 import org.wpilib.math.interpolation.InterpolatingDoubleTreeMap;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -68,10 +70,24 @@ public class LookupTable extends StateMachine<LookupTable.State> {
             double     distanceNoLookahead,
             double     timeOfFlight) {}
 
-    // Same limelight + tags as HeadingLock tX
-    private static final String LIMELIGHT_LEFT = "limelight-left";
-    private static final int[] RED_TAG_PRIORITY = {10, 5, 2};
-    private static final int[] BLUE_TAG_PRIORITY = {26, 21, 18};
+    // Manual override for building the shot table. With ManualOverride on, the lookup is bypassed
+    // and the drum/hood follow the dashboard values, so a point can be dialled in live and then
+    // recorded instead of edit-build-deploy per point.
+    private static final String TUNE_MANUAL_KEY = "Shooter/Tune/ManualOverride";
+    private static final String TUNE_RPM_KEY = "Shooter/Tune/RPM";
+    private static final String TUNE_HOOD_KEY = "Shooter/Tune/HoodDeg";
+    private static final double DEFAULT_TUNE_RPM = 2800.0;
+    /**
+     * Hood 0 is its rest position -- Hood's constructor calls setPosition(0.0) with no homing, so
+     * zero is wherever the mechanism sits at boot. That rest position is the closest shot, and the
+     * angle goes negative as distance increases. Starting here also means the first shot of a
+     * tuning session falls short rather than sailing long.
+     */
+    private static final double DEFAULT_TUNE_HOOD_DEG = 0.0;
+
+    private double lastActiveRpm = 0.0;
+    private double lastActiveHoodDeg = 0.0;
+    private final List<String> recordedPoints = new ArrayList<>();
 
     private static final double PHASE_DELAY_SECS = 0.03;
     private static final double MIN_DISTANCE = 1.0;
@@ -118,6 +134,45 @@ public class LookupTable extends StateMachine<LookupTable.State> {
         //addTofPoint(4, 0.4);
                // addTofPoint(5, 10000);
 
+        // setDefault*, not put*: put* overwrites on every boot, which silently wiped the values
+        // partway through a tuning session.
+        SmartDashboard.setDefaultBoolean(TUNE_MANUAL_KEY, false);
+        SmartDashboard.setDefaultNumber(TUNE_RPM_KEY, DEFAULT_TUNE_RPM);
+        SmartDashboard.setDefaultNumber(TUNE_HOOD_KEY, DEFAULT_TUNE_HOOD_DEG);
+
+        // All three persist so a redeploy mid-tuning-session does not lose them. Leaving the
+        // override latched into a real match would silently ignore the shot table, so instead of
+        // dropping it every boot it is force-cleared whenever an FMS is attached -- see
+        // robotPeriodic. That keeps tuning frictionless without the competition footgun.
+        var sd = NetworkTableInstance.getDefault().getTable("SmartDashboard");
+        sd.getEntry(TUNE_MANUAL_KEY).setPersistent();
+        sd.getEntry(TUNE_RPM_KEY).setPersistent();
+        sd.getEntry(TUNE_HOOD_KEY).setPersistent();
+
+        SmartDashboard.putData("Shooter/Tune/RecordPoint", recordPointCommand());
+        SmartDashboard.putString("Shooter/Tune/LastRecorded", "none yet");
+    }
+
+    /**
+     * Captures the current pose distance with whatever RPM and hood are currently commanded, and
+     * publishes it as a line that can be pasted straight into the constructor above.
+     */
+    private Command recordPointCommand() {
+        return Commands.runOnce(
+                () -> {
+                    ShootingParameters p = getParameters();
+                    String line =
+                            String.format(
+                                    "addShotPoint(new ShotPoint(%.2f, 0.0, %.0f, %.1f));",
+                                    p.distanceNoLookahead(), lastActiveRpm, lastActiveHoodDeg);
+                    recordedPoints.add(line);
+                    SmartDashboard.putString("Shooter/Tune/LastRecorded", line);
+                    SmartDashboard.putStringArray(
+                            "Shooter/Tune/RecordedPoints", recordedPoints.toArray(new String[0]));
+                    System.out.println("[ShotTune] " + line);
+                })
+            .ignoringDisable(true)
+            .withName("ShotTune/RecordPoint");
     }
 
     public void addShotPoint(ShotPoint p) {
@@ -131,6 +186,15 @@ public class LookupTable extends StateMachine<LookupTable.State> {
     public void disable() { setStateFromRequest(State.DISABLED); }
 
     public boolean isAtGoal() { return atGoal; }
+
+    /**
+     * The RPM and hood actually being commanded, which is the manual override when it is on and
+     * the table otherwise. Callers must use these rather than re-deriving from getParameters(),
+     * or they will fight this subsystem for control of the drum and hood.
+     */
+    public double getActiveRpm() { return lastActiveRpm; }
+
+    public double getActiveHoodDeg() { return lastActiveHoodDeg; }
 
     public double getHoodAngleOffsetDeg() { return hoodAngleOffsetDeg; }
     public void incrementHoodAngleOffsetDeg(double deltaDeg) { hoodAngleOffsetDeg += deltaDeg; }
@@ -219,31 +283,49 @@ public class LookupTable extends StateMachine<LookupTable.State> {
         super.robotPeriodic();
         clearCache();
 
+        // Published before the early return: everything under Shooter/Active* freezes at its last
+        // value when nothing is being commanded, which reads as the override ignoring you.
+        SmartDashboard.putBoolean("Shooter/Commanding", getState() == State.ENABLED);
+
         if (getState() != State.ENABLED) return;
 
         ShootingParameters p = getParameters();
 
-        // If a priority tag is visible, use tA for RPM + hood directly
-        Double ta = getPriorityTagTa();
+        // RPM and hood come from the pose-based distance in getParameters(), which already applies
+        // the velocity lookahead. The old tA path read limelight-left directly and overrode this
+        // whenever a priority tag happened to be the camera's primary target, so the shot solution
+        // silently switched sources mid-aim and ignored the lookahead.
+        boolean manual = SmartDashboard.getBoolean(TUNE_MANUAL_KEY, false);
+        if (manual && RobotState.isFMSAttached()) {
+            // Never let a leftover tuning override run a real match.
+            manual = false;
+            SmartDashboard.putBoolean(TUNE_MANUAL_KEY, false);
+        }
         double activeRpm;
         double activeHoodDeg;
-
-        if (ta != null) {
-            double[] taShot = lookupShotByTa(ta);
-            activeRpm = taShot[0];
-            activeHoodDeg = taShot[1];
-            SmartDashboard.putBoolean("Shooter/UsingTA", true);
-            SmartDashboard.putNumber("Shooter/TA", ta);
+        if (manual) {
+            activeRpm = SmartDashboard.getNumber(TUNE_RPM_KEY, DEFAULT_TUNE_RPM);
+            activeHoodDeg = SmartDashboard.getNumber(TUNE_HOOD_KEY, DEFAULT_TUNE_HOOD_DEG);
         } else {
             activeRpm = p.flywheelRpm();
             activeHoodDeg = Math.toDegrees(p.hoodAngleRad());
-            SmartDashboard.putBoolean("Shooter/UsingTA", false);
         }
+        lastActiveRpm = activeRpm;
+        lastActiveHoodDeg = activeHoodDeg;
+
+        SmartDashboard.putBoolean("Shooter/ManualOverride", manual);
+        SmartDashboard.putNumber("Shooter/LookupDistanceM", p.distance());
+        SmartDashboard.putNumber("Shooter/RawDistanceM", p.distanceNoLookahead());
+        // Shooter/Target* come from getParameters() and always show the table's answer. In manual
+        // mode that is not what is being commanded, so publish the commanded values separately.
+        SmartDashboard.putNumber("Shooter/ActiveRPM", activeRpm);
+        SmartDashboard.putNumber("Shooter/ActiveHoodDeg", activeHoodDeg);
 
         // Always spin the drum so it's ready even if aim isn't valid yet
         drum.spinDrum(activeRpm);
 
-        if (!p.isValid() && ta == null) return;
+        // Manual mode ignores the validity gate so a point can be tuned anywhere on the field.
+        if (!manual && !p.isValid()) return;
 
         hood.setAngleDegrees(activeHoodDeg);
 
@@ -288,45 +370,7 @@ public class LookupTable extends StateMachine<LookupTable.State> {
         return new double[]{last.rpm, last.hoodAngleDeg};
     }
 
-    /** Interpolate RPM + hood by tA. Shot points are sorted by distance (ascending),
-     *  which means tA is descending (closer = bigger tA). We sort a copy by tA for lookup. */
-    private double[] lookupShotByTa(double ta) {
-        if (shotPoints.isEmpty()) return new double[]{0, 0};
-        // Build a tA-sorted view (ascending tA = farther away)
-        List<ShotPoint> byTa = new ArrayList<>(shotPoints);
-        byTa.sort(Comparator.comparingDouble(sp -> sp.ta));
-
-        if (ta <= byTa.get(0).ta) {
-            ShotPoint p = byTa.get(0);
-            return new double[]{p.rpm, p.hoodAngleDeg};
-        }
-        for (int i = 1; i < byTa.size(); i++) {
-            ShotPoint lo = byTa.get(i - 1), hi = byTa.get(i);
-            if (ta <= hi.ta) {
-                double t = (ta - lo.ta) / (hi.ta - lo.ta);
-                return new double[]{
-                        lo.rpm          + t * (hi.rpm          - lo.rpm),
-                        lo.hoodAngleDeg + t * (hi.hoodAngleDeg - lo.hoodAngleDeg)
-                };
-            }
-        }
-        ShotPoint last = byTa.get(byTa.size() - 1);
-        return new double[]{last.rpm, last.hoodAngleDeg};
-    }
-
     /** Get tA from the left limelight if a priority tag is visible. Returns null if no tag. */
-    private Double getPriorityTagTa() {
-        if (!LimelightHelpers.getTV(LIMELIGHT_LEFT)) return null;
-        int fiducial = (int) LimelightHelpers.getFiducialID(LIMELIGHT_LEFT);
-        int[] priority = FmsSubsystem.isRedAlliance() ? RED_TAG_PRIORITY : BLUE_TAG_PRIORITY;
-        for (int tagId : priority) {
-            if (fiducial == tagId) {
-                return LimelightHelpers.getTA(LIMELIGHT_LEFT);
-            }
-        }
-        return null;
-    }
-
     private ChassisVelocities computeLauncherVelocity(ChassisVelocities robotRelVel, Rotation2d robotAngle) {
         double fieldVx = robotRelVel.vx * robotAngle.getCos()
                        - robotRelVel.vy * robotAngle.getSin();

@@ -31,7 +31,11 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
   private static final String USE_TX_KEY = "HeadingLock/UseTx";
   private boolean useTxCheck = true; //-0.5842
 
-  private static final double HEADING_TOLERANCE_DEG = 2;
+  // Was 2. The snap settles about 2.3 degrees short of the tag every time -- measured at -2.41,
+  // -2.38 and -2.32 across three holds -- so the gate never opened and the robot would not shoot.
+  // 3.0 covers that residual. If the residual itself gets fixed (camera crosshair offset or snap
+  // tuning), tighten this back down.
+  private static final double HEADING_TOLERANCE_DEG = 2.7;
   private double lastTargetAngleDeg = 0.0;
   private static final double HEADING_SETTLE_TIME_S = 0.10;
   private double headingOnTargetStartTime = -1.0;
@@ -176,9 +180,16 @@ public class HeadingLock extends StateMachine<HeadingLock.HeadingLockState> {
     if (useTxCheck && Math.abs(poseError) <= TX_SWITCH_DEG) {
       // There is no Limelight process in desktop simulation. Generate the ideal camera tx from
       // field geometry once the target is inside the same acquisition window used on the robot.
-      txDegrees = RobotBase.isSimulation()
-          ? HeadingLockMath.simulatedTxDegrees(geometricPoseAngle, currentHeading)
-          : getPriorityTagTx();
+      //
+      // This must stay an if/else. As a ternary, mixing the primitive double from
+      // simulatedTxDegrees with the nullable Double from getPriorityTagTx makes the whole
+      // expression numeric (JLS 15.25), so the Double arm is unboxed while the ternary is
+      // evaluated -- which throws NPE on no visible tag before the null check below can run.
+      if (RobotBase.isSimulation()) {
+        txDegrees = HeadingLockMath.simulatedTxDegrees(geometricPoseAngle, currentHeading);
+      } else {
+        txDegrees = getPriorityTagTx();
+      }
     }
 
     double finalAngle = poseAngle;

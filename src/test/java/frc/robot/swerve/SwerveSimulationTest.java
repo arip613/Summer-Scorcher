@@ -31,15 +31,22 @@ class SwerveSimulationTest {
     try {
       // First collection sets the simulated slow-mode multiplier to 1.0.
       swerve.robotPeriodic();
-      swerve.driveTeleop(1.0, 0.0, 0.0);
-      assertTrue(
-          swerve.getTeleopSpeeds().vy > 0.0,
-          "positive controller X must command positive field Y");
-
-      swerve.driveTeleop(0.0, 1.0, 0.0);
+      // Simulation defaults to the blue alliance, so no alliance flip applies here. The field
+      // frame is blue-origin: +X points at the red wall, +Y is the blue driver's left.
+      //
+      // getLeftX() is "right is positive" and getLeftY() is "back is positive", so a stick pushed
+      // forward-left is (x=-1, y=-1). These previously asserted the opposite sign on both axes,
+      // which matched the shipped behaviour but not the field frame -- on the real robot that
+      // showed up as translation being inverted for both alliances.
+      swerve.driveTeleop(0.0, -1.0, 0.0);
       assertTrue(
           swerve.getTeleopSpeeds().vx > 0.0,
-          "positive controller Y must command positive field X");
+          "stick forward must drive toward +X for a blue driver");
+
+      swerve.driveTeleop(-1.0, 0.0, 0.0);
+      assertTrue(
+          swerve.getTeleopSpeeds().vy > 0.0,
+          "stick left must drive toward +Y for a blue driver");
 
       double initialHeading = swerve.getSimPose().getRotation().getDegrees();
       Unmanaged.feedEnable(1000);

@@ -6,7 +6,8 @@ import com.ctre.phoenix6.swerve.SwerveDrivetrain.SwerveDriveState;
 import com.ctre.phoenix6.swerve.SwerveModule.DriveRequestType;
 import com.ctre.phoenix6.swerve.SwerveRequest;
 import com.ctre.phoenix6.swerve.utility.PhoenixPIDController;
-import org.wpilib.driverstation.Alliance;
+import frc.robot.fms.FmsSubsystem;
+import org.wpilib.smartdashboard.SmartDashboard;
 import org.wpilib.math.linalg.Matrix;
 import org.wpilib.math.linalg.VecBuilder;
 import org.wpilib.math.geometry.Rotation2d;
@@ -15,7 +16,6 @@ import org.wpilib.math.geometry.Translation2d;
 import org.wpilib.math.interpolation.InterpolatingDoubleTreeMap;
 import org.wpilib.math.kinematics.ChassisVelocities;
 import org.wpilib.math.util.Units;
-import org.wpilib.driverstation.MatchState;
 import org.wpilib.driverstation.RobotState;
 import org.wpilib.system.Notifier;
 import org.wpilib.system.RobotController;
@@ -231,7 +231,11 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
       leftY *= -1.0;
     }
 
-    if (MatchState.getAlliance().orElse(Alliance.BLUE) == Alliance.RED) {
+    // Must be the same alliance source the rest of the robot uses. This previously read
+    // MatchState.getAlliance().orElse(BLUE) while FmsSubsystem defaults to RED on a real robot, so
+    // with no alliance selected on the DS the drive refused to flip while HeadingLock, the autos
+    // and FieldPoints all treated the robot as red -- translation backwards, rotation fine.
+    if (FmsSubsystem.isRedAlliance()) {
       leftX *= -1.0;
       leftY *= -1.0;
     }
@@ -240,11 +244,29 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
     double mappedX = mappedpose.getX();
     double mappedY = mappedpose.getY();
 
+    // Blue-origin field frame: +X points from the blue wall toward red, +Y is the blue driver's
+    // left. These signs must be the BLUE-correct mapping, because the alliance flip above already
+    // rotates the stick 180 degrees for red. They were previously negated, which made the unflipped
+    // case red-correct and left the flip inverting a frame that was already right -- measured with
+    // the robot at heading 178 deg, stick-forward commanded vx +0.358 when it needed to be negative.
     teleopSpeeds =
         new ChassisVelocities(
-            -1.0 * mappedY * MaxSpeed * teleopSlowModePercent,
-            mappedX * MaxSpeed * teleopSlowModePercent,
+            mappedY * MaxSpeed * teleopSlowModePercent,
+            -1.0 * mappedX * MaxSpeed * teleopSlowModePercent,
             rightX * TELEOP_MAX_ANGULAR_RATE * teleopSlowModePercent);
+
+    // Full input chain, for diagnosing direction problems. Order:
+    // 0-2 raw controller x/y/theta, 3-5 after deadband+exp+inverts+alliance flip,
+    // 6-8 commanded field-relative vx/vy/omega, 9 robot heading deg, 10 isRed.
+    SmartDashboard.putNumberArray(
+        "Swerve/TeleopDebug",
+        new double[] {
+          x, y, theta,
+          leftX, leftY, rightX,
+          teleopSpeeds.vx, teleopSpeeds.vy, teleopSpeeds.omega,
+          drivetrainState.Pose.getRotation().getDegrees(),
+          FmsSubsystem.isRedAlliance() ? 1.0 : 0.0
+        });
 
     sendSwerveRequest();
   }

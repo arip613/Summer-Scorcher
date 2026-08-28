@@ -6,6 +6,7 @@ import org.wpilib.driverstation.internal.DriverStationBackend;
 import org.wpilib.driverstation.RobotState;
 import org.wpilib.driverstation.Gamepad;
 import org.wpilib.framework.TimedRobot;
+import org.wpilib.math.filter.Debouncer;
 import org.wpilib.math.geometry.Rotation2d;
 import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.command2.Command;
@@ -27,6 +28,7 @@ import frc.robot.Intake.intaker;
 import frc.robot.FlywheelSubsystem.Drum;
 import frc.robot.FlywheelSubsystem.Hood;
 import frc.robot.FlywheelSubsystem.DrumStateMachine;
+import frc.robot.FlywheelSubsystem.DrumTuner;
 import frc.robot.FlywheelSubsystem.HoodStateMachine;
 import frc.robot.IndexerSubsystem.Indexer;
 import frc.robot.IndexerSubsystem.Hopper;
@@ -93,6 +95,8 @@ public class Robot extends TimedRobot {
   private final IntakePosition intakePosition = new IntakePosition(hardware.intakePivotMotor);
   private final OutpostSetpoint outpost = new OutpostSetpoint(localization, swerve, intakePosition, intakeRoller);
   private final DrumStateMachine drumSM = new DrumStateMachine(drum);
+  @SuppressWarnings("unused")
+  private final DrumTuner drumTuner = new DrumTuner(drum, drumSM);
   private final HoodStateMachine hoodSM = new HoodStateMachine(hood);
   private final Indexer indexer = new Indexer(hardware.indexerMotor, hardware.indexerMotor2);
   private final Hopper hopper = new Hopper(hardware.hopperMotor);
@@ -121,6 +125,22 @@ public class Robot extends TimedRobot {
   private double rumbleStepEndTime = 0;
   private int shootReadyFrames = 0;
   private static final int SHOOT_READY_FRAME_THRESHOLD = 2;
+  /**
+   * Holds the shot gate open through brief gate dropouts so the feed does not stutter.
+   *
+   * <p>0.08s. Measured release velocity over a volley: target 2800, mean 2711, min 2615. With
+   * RPM_TOLERANCE at 80 no ball should leave below 2720, so a 0.25s window was holding the gate
+   * open ~105 RPM past the limit and letting slow balls out -- that was the shot spread. Keep this
+   * short enough that the gate closes during a dip, but long enough to bridge a single-frame
+   * heading flicker.
+   */
+  private final Debouncer shootReadyDebouncer =
+      new Debouncer(0.08, Debouncer.DebounceType.kFalling);
+  /** Frames each shoot gate blocked on, reset when the trigger is pressed. */
+  private int blockedInvalid = 0;
+  private int blockedTooFast = 0;
+  private int blockedDrum = 0;
+  private int blockedHeading = 0;
 
   
   public Robot() {
@@ -212,9 +232,34 @@ public class Robot extends TimedRobot {
     SignalLogger.enableAutoLogging(false);
   }
 
+  /**
+   * Publishes every raw driver axis alongside the named accessors. WPILib 2027's Gamepad puts
+   * RightX/RightY at raw axes 2/3 and the triggers at 4/5, where the legacy XboxController layout
+   * had them at 4/5 and 2/3 -- the same remap that put the physical Back button at raw 6. This
+   * shows which physical stick each named accessor is actually reading.
+   */
+  private void publishDriverAxisDiagnostics() {
+    var driverHid = hardware.driverController.getHID();
+    int axisCount = driverHid.getAxesMaximumIndex();
+    double[] rawAxes = new double[axisCount];
+    for (int axis = 0; axis < rawAxes.length; axis++) {
+      rawAxes[axis] = driverHid.getRawAxis(axis);
+    }
+    SmartDashboard.putNumberArray("Driver/RawAxes", rawAxes);
+    SmartDashboard.putNumberArray(
+        "Driver/Named",
+        new double[] {
+          hardware.driverController.getLeftX(),
+          hardware.driverController.getLeftY(),
+          hardware.driverController.getRightX(),
+          hardware.driverController.getRightY()
+        });
+  }
+
   @Override
   public void robotPeriodic() {
     CommandScheduler.getInstance().run();
+    publishDriverAxisDiagnostics();
     field2d.setRobotPose(localization.getPose());
     FieldPoints.publishHeadingLockPoints();
     field2d.getObject("Red Hub").setPose(
@@ -289,6 +334,10 @@ public class Robot extends TimedRobot {
     turretLookup.disable();
   drumSM.requestOff();
     hoodSM.requestOff();
+    // The intake's initial state is OFF, which commands CoastOut -- the arm is unheld and settles
+    // wherever gravity leaves it. Hold it at the deployed position instead, so enable puts the arm
+    // at the tuned working height (Intake/Tune/DeployRotations) rather than letting it sag.
+    intakePosition.retract();
 
     ElasticLayoutUtil.onEnable();
 
@@ -521,6 +570,10 @@ public class Robot extends TimedRobot {
   private void enterRightTriggerMode(boolean shooting) {
     rtShootMode = shooting;
     shootReadyFrames = 0;
+    blockedInvalid = 0;
+    blockedTooFast = 0;
+    blockedDrum = 0;
+    blockedHeading = 0;
     SmartDashboard.putBoolean("Driver/RT_ShootMode", shooting);
 
     if (shooting) {
@@ -774,23 +827,61 @@ intakePosition.deploy();
 
           if (shootMode) {
             var params = turretLookup.getParameters();
-            double rpm = params.flywheelRpm();
-            double hoodRad = params.hoodAngleRad();
+            // Must come from the subsystem, not re-derived from getParameters(). LookupTable is
+            // already commanding the drum and hood every loop, and re-deriving here ignored the
+            // manual tuning override -- the two then alternated 0 and -15 degrees at 50 Hz.
+            double rpm = turretLookup.getActiveRpm();
+            double hoodDeg = turretLookup.getActiveHoodDeg();
             drumSM.requestRpm(rpm);
-            hoodSM.requestDegrees(Math.toDegrees(hoodRad));
+            hoodSM.requestDegrees(hoodDeg);
             var speeds = swerve.getRobotRelativeSpeeds();
             double robotSpeed = Math.hypot(speeds.vx, speeds.vy);
             boolean slowEnough = robotSpeed < SHOOT_SPEED_THRESHOLD;
-            boolean allReady = params.isValid() && slowEnough && drum.isAtGoal() && headingLock.isSettled();
+            boolean validNow = params.isValid();
+            boolean drumReady = drum.isAtGoal();
+            boolean headingReady = headingLock.isSettled();
+            boolean allReadyRaw = validNow && slowEnough && drumReady && headingReady;
+            // Falling debounce: a single bad frame used to zero shootReadyFrames, which stopped the
+            // indexer and hopper mid-shot. Heading settles in and out across the 2 degree tolerance
+            // while the swerve holds angle, so the feed stuttered instead of running continuously
+            // and balls never got a clean run at the shooter. Rising edge is still immediate.
+            boolean allReady = shootReadyDebouncer.calculate(allReadyRaw);
             if (allReady) {
               shootReadyFrames++;
             } else {
               shootReadyFrames = 0;
             }
+
+            // Any one of these dropping for a single frame resets shootReadyFrames and stops the
+            // feed, which reads as "it just doesn't shoot sometimes". Counting blocked frames per
+            // gate shows which one is actually responsible over a whole trigger hold.
+            String blocker;
+            if (!validNow) {
+              blocker = String.format("shot params invalid (%.2f m)", params.distance());
+              blockedInvalid++;
+            } else if (!slowEnough) {
+              blocker = String.format("moving %.2f m/s", robotSpeed);
+              blockedTooFast++;
+            } else if (!drumReady) {
+              blocker = String.format(
+                  "drum off RPM by %.0f", turretLookup.getActiveRpm() - drum.getRpm());
+              blockedDrum++;
+            } else if (!headingReady) {
+              blocker = "heading not settled";
+              blockedHeading++;
+            } else {
+              blocker = "ready";
+            }
+
             if (ENABLE_DASHBOARD) {
               SmartDashboard.putNumber("Driver/RobotSpeed", robotSpeed);
               SmartDashboard.putBoolean("Driver/SlowEnoughToShoot", slowEnough);
               SmartDashboard.putNumber("Driver/ShootReadyFrames", shootReadyFrames);
+              SmartDashboard.putString("Driver/BlockedBy", blocker);
+              SmartDashboard.putNumber("Driver/BlockedFrames/Invalid", blockedInvalid);
+              SmartDashboard.putNumber("Driver/BlockedFrames/TooFast", blockedTooFast);
+              SmartDashboard.putNumber("Driver/BlockedFrames/DrumRPM", blockedDrum);
+              SmartDashboard.putNumber("Driver/BlockedFrames/Heading", blockedHeading);
             }
             if (shootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD) {
               indexer.feed();
@@ -806,7 +897,7 @@ intakePosition.deploy();
       ).alongWith(
         org.wpilib.command2.Commands.sequence(
           org.wpilib.command2.Commands.waitSeconds(1.75),
-          org.wpilib.command2.Commands.runOnce(() -> intakePosition.shooter())
+          org.wpilib.command2.Commands.runOnce(() -> intakePosition.deploy())
         )
       )
     );

@@ -7,7 +7,11 @@ import frc.robot.config.RobotConfig.VisionConfig;
 
 class CompConfig {
   private static PhoenixPIDController createSnapController() {
-    var controller = new PhoenixPIDController(4.5,0.00, 0.0);
+    // P=4.5, D=0. A D term (tried 0.30) was reverted: heading now derives from real camera tx,
+    // and D amplified that signal's jitter into twitchy rotation -- blocked frames on the heading
+    // gate went from 0 to 89. The overshoot it was meant to damp is better handled by the widened
+    // HEADING_TOLERANCE_DEG and settle time in HeadingLock.
+    var controller = new PhoenixPIDController(4.5, 0.00, 0.0);
     controller.setIZone(8.0);
     return controller;
   }

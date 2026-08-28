@@ -14,7 +14,7 @@ public class Indexer extends StateMachine<Indexer.IndexerState> {
   public enum IndexerState { OFF, INTAKE, FEED, REVERSE }
 
   public static final double INTAKE_POWER = -0.9;
-    public static final double FEED_POWER = -0.9;
+    public static final double FEED_POWER = -1.0;
   public static final double REVERSE_POWER = -0.5;
 
   private final TalonFX indexerA;
@@ -26,9 +26,9 @@ public class Indexer extends StateMachine<Indexer.IndexerState> {
      var cfg = new TalonFXConfiguration();
 
     cfg.CurrentLimits = new CurrentLimitsConfigs()
-				.withSupplyCurrentLimit(40)
+				.withSupplyCurrentLimit(60)
 				.withSupplyCurrentLimitEnable(true)
-				.withStatorCurrentLimit(60)
+				.withStatorCurrentLimit(80)
 				.withStatorCurrentLimitEnable(true);
 		indexerA.getConfigurator().apply(cfg);
     indexerB.getConfigurator().apply(cfg);
