@@ -205,8 +205,10 @@ public class PointToPointAutos {
             indexer.feed();
             hopper.feed();
             if (beamBreak.hasBall()) {
-              // Balls still reaching the sensor: a full end to end sweep keeps the stack moving.
-              intakePosition.swing();
+              // Balls are still reaching the sensor, so the feed is working. Hold the arm at the
+              // deployed height and leave it alone -- moving it can only disturb a stack that is
+              // already feeding itself.
+              intakePosition.deploy();
             } else {
               // Hopper has run low enough that nothing reaches the sensor. Switch to the staged
               // agitation to work the stragglers down into the indexer while still shooting.
