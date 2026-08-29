@@ -340,16 +340,23 @@ public class PointToPointAutos {
         .driveToAll(sidePose("firstShoot", 13.7, 5.2, 195, leftSide))
         .runFor(3, startShooting())
         .run(stopShooting())
-        .driveToAll(sidePose("trenchEntry", 13.71, 7.430, 0, leftSide))
-        .driveToAll(sidePose("trenchExit", 10.71, 7.430, 0, leftSide))
-        .driveToAll(sidePose("secondPickupOuter", 9.51, 6.36, 90, leftSide), 2.7)
-        .driveToAll(sidePose("secondPickupInner", 9.38, 3.99, 90, leftSide), 2.7)
-        .driveToAll(sidePose("secondPickupHubSlam", 10.58, 4.0, 269, leftSide), 2.7)
-        .driveToAll(sidePose("lineupToBump2", 9.71, 5, 270, leftSide))
-        .bumpCross(Rotation2d.kZero)
-        .driveToAll(sidePose("secondShootApproach", 13.2, 5.67, 270, leftSide))
-        .driveToAll(sidePose("secondShoot", 13.7, 5.2, 270, leftSide))
-        .runFor(3, startShooting())
+        // ===== SECOND CYCLE (trench + second pickup + second shot) -- DISABLED =====
+        // The auto now ends after the first shot. In match AZGLE4_Q19 the first half took 14.9s of
+        // the 20s period and the robot was still driving to trenchEntry when auto ended, so the
+        // second cycle never had time to complete and only added risk.
+        //
+        // Re-enable by uncommenting. Nothing else needs changing -- the bump crossing, the
+        // per-waypoint speed caps and the shot sequence all work as written.
+        // .driveToAll(sidePose("trenchEntry", 13.71, 7.430, 0, leftSide))
+        // .driveToAll(sidePose("trenchExit", 10.71, 7.430, 0, leftSide))
+        // .driveToAll(sidePose("secondPickupOuter", 9.51, 6.36, 90, leftSide), 2.7)
+        // .driveToAll(sidePose("secondPickupInner", 9.38, 3.99, 90, leftSide), 2.7)
+        // .driveToAll(sidePose("secondPickupHubSlam", 10.58, 4.0, 269, leftSide), 2.7)
+        // .driveToAll(sidePose("lineupToBump2", 9.71, 5, 270, leftSide))
+        // .bumpCross(Rotation2d.kZero)
+        // .driveToAll(sidePose("secondShootApproach", 13.2, 5.67, 270, leftSide))
+        // .driveToAll(sidePose("secondShoot", 13.7, 5.2, 270, leftSide))
+        // .runFor(3, startShooting())
         .run(stopAll())
         .build();
 
