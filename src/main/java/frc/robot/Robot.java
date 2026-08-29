@@ -264,10 +264,19 @@ public class Robot extends TimedRobot {
     }
 
     // BLine-Lib global constraints (no GUI/JSON needed).
+    //
+    // These MUST satisfy P * maxVelocity <= maxAcceleration for each axis, using the gains
+    // passed to FollowPath.Builder below. BLine drives with a pure P controller behind a
+    // velocity clamp and a rate limiter (FollowPath.execute phase 6). A P law commands
+    // v = P * error, so it demands a deceleration of P * v -- peaking at P * maxVelocity right
+    // as it comes out of the velocity clamp. If the rate limiter cannot supply that, the robot
+    // arrives at the target still faster than the P law wants, sails past it, and oscillates
+    // back. Rotation was the worst offender: 5.0 * 540 deg/s demanded 2700 deg/s^2 against an
+    // 860 deg/s^2 limit, so every turn larger than ~108 deg overshot by construction.
     Path.setDefaultGlobalConstraints(new Path.DefaultGlobalConstraints(
-        4.5,   // max velocity m/s
+        4.5,   // max velocity m/s          (2.5 * 4.5 = 11.25 <= 12.0)
         12.0,  // max acceleration m/s²
-        540.0, // max rotational velocity deg/s
+        200.0, // max rotational velocity deg/s   (4.0 * 200 = 800 <= 860)
         860.0, // max rotational acceleration deg/s²
         0.03,  // end translation tolerance m
         2.0,   // end rotation tolerance deg
@@ -280,9 +289,9 @@ public class Robot extends TimedRobot {
         localization::getPose,
         swerve::getRobotRelativeSpeeds,
         swerve::setRobotRelativeAutoSpeeds,
-        new PIDController(5.0, 0.0, 0.0),
-        new PIDController(5.0, 0.0, 0.0),
-        new PIDController(2.0, 0.0, 0.0));
+        new PIDController(2.5, 0.0, 0.0),  // translation: bounded by 12.0 / 4.5 = 2.66
+        new PIDController(4.0, 0.0, 0.0),  // rotation:    bounded by 860 / 200 = 4.3
+        new PIDController(2.0, 0.0, 0.0)); // cross-track: unclamped by BLine, left alone
 
     configureBindings();
 
