@@ -147,6 +147,12 @@ public class Robot extends TimedRobot {
       () -> swerve.getDrivetrainState().Pose.getRotation().getDegrees(),
       hardware.leftLimelight, hardware.rightLimelight);
   private final LocalizationSubsystem localization = new LocalizationSubsystem(imu, vision, swerve);
+  // Never constructed until now, so none of its periodic ran: no match time, no match metadata,
+  // and no renaming of the log to the match name. isRedAlliance() is static and worked regardless,
+  // which is why nothing looked broken. A field initializer so it registers before
+  // LifecycleSubsystemManager.ready().
+  @SuppressWarnings("unused")
+  private final FmsSubsystem fms = new FmsSubsystem();
   // A field initializer, not a constructor-body assignment: LifecycleSubsystemManager.ready() runs
   // partway through the constructor, and anything built after it never gets a periodic.
   private final BumpCrossingTracker bumpCrossingTracker =
