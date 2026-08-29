@@ -14,6 +14,7 @@ import com.ctre.phoenix6.signals.NeutralModeValue;
 
 import org.wpilib.command2.Commands;
 import org.wpilib.smartdashboard.SmartDashboard;
+import org.wpilib.driverstation.RobotState;
 import org.wpilib.system.Timer;
 import frc.robot.util.scheduling.SubsystemPriority;
 import frc.robot.util.state_machines.StateMachine;
@@ -156,6 +157,20 @@ cfg.MotorOutput = new MotorOutputConfigs()
 				Commands.runOnce(this::stopPulse).ignoringDisable(true).withName("Intake/Stop"));
 }
 
+	@Override
+	public void disabledInit() {
+		// Freezing the cycle above stops it stepping while disabled, but it also preserves whatever
+		// stage was latched at the moment of the disable -- and three of the four agitation stages
+		// hold the arm raised. Park the latched command at the deployed height so enabling drives
+		// the arm down to its working position instead of up to wherever the cycle stopped.
+		//
+		// Deliberately only from the agitation states. Doing it unconditionally would command a
+		// deploy out of OFF at boot, which is a behaviour change well beyond this fix.
+		if (getState() == State.PULSE || getState() == State.SWING) {
+			setStateFromRequest(State.DEPLOY);
+		}
+	}
+
 	/** Commands a position and records it, so telemetry can show target vs actual. */
 	private void goTo(double rotations) {
 		lastCommandedRotations = rotations;
@@ -232,7 +247,16 @@ cfg.MotorOutput = new MotorOutputConfigs()
 				}
 			}
 
-			if (getState() == State.PULSE) {
+			// The agitation must not run while disabled. collectInputs is driven from
+			// robotPeriodic, which LifecycleSubsystem calls in every stage, so the cycle used to
+			// keep stepping with the robot disabled -- and because the arm cannot move, every
+			// stage ended on its timeout rather than on reaching the target. The Talon latches
+			// each commanded position without acting on it, so whichever stage the cycle happened
+			// to be sitting on at the moment of enable is what the arm snapped to. One stage in
+			// four is fully retracted, which is why the intake jumped up on enable.
+			boolean disabled = RobotState.isDisabled();
+
+			if (!disabled && getState() == State.PULSE) {
 				// Staged rather than a timer toggle: 20% of travel, then 50%, then all the way
 				// down, then all the way up -- and then around again for as long as the state is
 				// held. Each stage ends on whichever comes first, reaching the target or the stage
@@ -253,7 +277,7 @@ cfg.MotorOutput = new MotorOutputConfigs()
 					swingStageStart = now;
 					goToAgitate(raisedByFraction(SWING_STAGE_FRACTIONS[swingStage]));
 				}
-			} else if (getState() == State.SWING) {
+			} else if (!disabled && getState() == State.SWING) {
 				// Sweep end to end for as long as the state is held.
 				double now = Timer.getTimestamp();
 				if (now - lastPulseToggleTime >= FULL_SWING_LEG_SECONDS) {
