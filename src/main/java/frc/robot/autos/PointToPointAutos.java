@@ -199,10 +199,19 @@ public class PointToPointAutos {
           }
 
           if (autoShootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD) {
+            // Keep feeding regardless -- only the arm motion changes. Ball presence must never
+            // gate the shot here: the hopper going quiet is exactly when the last few balls still
+            // need to be shot, so stopping would strand them.
             indexer.feed();
             hopper.feed();
-            // Feeding: sweep the arm end to end to keep balls moving toward the indexer.
-            intakePosition.swing();
+            if (beamBreak.hasBall()) {
+              // Balls still reaching the sensor: a full end to end sweep keeps the stack moving.
+              intakePosition.swing();
+            } else {
+              // Hopper has run low enough that nothing reaches the sensor. Switch to the staged
+              // agitation to work the stragglers down into the indexer while still shooting.
+              intakePosition.pulse();
+            }
           } else {
             indexer.stop();
             hopper.stop();
