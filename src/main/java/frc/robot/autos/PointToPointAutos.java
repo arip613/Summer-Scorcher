@@ -327,7 +327,10 @@ public class PointToPointAutos {
         .startAt(sidePose("start", 12.16, 7.383, 90, leftSide))
         .run(startIntaking()) // don't cut off intaking early if we get stuck on the first waypoint
         .driveToAll(sidePose("firstPickupOuter", 8.88, 7.321, 115, leftSide))
-        .driveToAll(sidePose("firstPickupInner", 8.88, 4.471, 115, leftSide))
+        // Into the ball pile. Taken at full speed the robot buries itself and stalls, so this is
+        // the one approach in the first batch that is capped. Only this waypoint slows down --
+        // caps are per waypoint, so the run up to firstPickupOuter still happens at full speed.
+        .driveToAll(sidePose("firstPickupInner", 8.88, 4.471, 115, leftSide), 1.5)
         .driveToAll(sidePose("lineupToBump", 9.71, 5, 270, leftSide))
         // Crossing runs +X in red coords (9.71 -> 13.2). No landing point yet: a pose reset to a
         // guessed location is worse than none, so this is velocity override only until the real

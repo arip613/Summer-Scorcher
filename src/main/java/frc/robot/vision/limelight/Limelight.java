@@ -101,6 +101,24 @@ public class Limelight extends StateMachine<LimelightState> {
     setStateFromRequest(state);
   }
 
+  /**
+   * Flushes the last {@code seconds} of the camera's rewind buffer to a .rwnd file on the camera.
+   *
+   * <p>Rewind records continuously on its own; nothing reaches disk until a capture is triggered,
+   * which is why this can be fired after the fact with no cost during the match. Limelight 4 only,
+   * and the buffer tops out at 165 seconds.
+   *
+   * <p>Written as a raw NetworkTables key because the vendored LimelightHelpers in this repo
+   * predates setRewindEnabled/triggerRewindCapture.
+   */
+  public void triggerRewindCapture(double seconds) {
+    if (limelightModel != LimelightModel.FOUR) {
+      return;
+    }
+    LimelightHelpers.setLimelightNTDouble(limelightTableName, "capture_rewind", seconds);
+    SmartDashboard.putNumber(debugKey("RewindCaptureSeconds"), seconds);
+  }
+
 
   /** Marks the result empty, records why, and publishes it for debugging. */
   private OptionalTagResult reject(String reason) {

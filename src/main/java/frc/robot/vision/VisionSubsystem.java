@@ -15,6 +15,14 @@ import frc.robot.vision.results.OptionalTagResult;
 import java.util.function.DoubleSupplier;
 
 public class VisionSubsystem extends StateMachine<VisionState> {
+  /**
+   * How much of the rewind buffer to flush at the end of each match period. The buffer caps at 165
+   * seconds, so auto and teleop are captured separately rather than as one file -- a single capture
+   * long enough to reach back past auto would not fit.
+   */
+  private static final double AUTO_REWIND_SECONDS = 30.0;
+
+  private static final double TELEOP_REWIND_SECONDS = 160.0;
   private final Debouncer seeingTagDebouncer = new Debouncer(1.0, DebounceType.kFalling);
   private final Debouncer seeingTagForPoseResetDebouncer =
       new Debouncer(5.0, DebounceType.kFalling);
@@ -25,6 +33,10 @@ public class VisionSubsystem extends StateMachine<VisionState> {
   private final DoubleSupplier headingSupplier;
   private final Limelight leftLimelight;
   private final Limelight rightLimelight;
+  private boolean wasAutoEnabled = false;
+  private boolean wasTeleopEnabled = false;
+  private boolean capturedAuto = false;
+  private boolean capturedTeleop = false;
 
   private OptionalTagResult leftTagResult = new OptionalTagResult();
   private OptionalTagResult rightTagResult = new OptionalTagResult();
@@ -124,6 +136,44 @@ public class VisionSubsystem extends StateMachine<VisionState> {
     rightLimelight.sendImuData(robotHeading, angularVelocity, pitch, pitchRate, roll, rollRate);
 
     publishDiscoveredLimelightTables();
+    captureRewindAtEndOfMatchPeriod();
+  }
+
+  /**
+   * Flushes the cameras' rewind buffers to disk when each match period ends, on FMS only.
+   *
+   * <p>Rewind is always recording, so this costs nothing until it fires and nothing during the
+   * match itself. Triggered on the enabled-to-disabled edge rather than on a timer: that is the
+   * point where the period is definitively over and the robot has time to write the file.
+   *
+   * <p>FMS-gated on purpose. Firing on every practice enable would fill the cameras with .rwnd
+   * files nobody asked for, and the point of this is having footage of real matches.
+   */
+  private void captureRewindAtEndOfMatchPeriod() {
+    if (!RobotState.isFMSAttached()) {
+      return;
+    }
+
+    if (RobotState.isAutonomousEnabled()) {
+      wasAutoEnabled = true;
+    } else if (wasAutoEnabled && !capturedAuto && RobotState.isDisabled()) {
+      capturedAuto = true;
+      triggerRewindOnBothCameras(AUTO_REWIND_SECONDS, "auto");
+    }
+
+    if (RobotState.isTeleopEnabled()) {
+      wasTeleopEnabled = true;
+    } else if (wasTeleopEnabled && !capturedTeleop && RobotState.isDisabled()) {
+      capturedTeleop = true;
+      triggerRewindOnBothCameras(TELEOP_REWIND_SECONDS, "teleop");
+    }
+  }
+
+  private void triggerRewindOnBothCameras(double seconds, String label) {
+    leftLimelight.triggerRewindCapture(seconds);
+    rightLimelight.triggerRewindCapture(seconds);
+    SmartDashboard.putString("Vision/LastRewindCapture", label + " " + seconds + "s");
+    System.out.println("[Vision] Triggered " + seconds + "s rewind capture after " + label);
   }
 
   /**
