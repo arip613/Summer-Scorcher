@@ -2,10 +2,12 @@ package frc.robot.autos;
 
 import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.math.geometry.Rotation2d;
+import org.wpilib.math.geometry.Translation2d;
 import org.wpilib.math.kinematics.ChassisVelocities;
 import org.wpilib.command2.Command;
 import org.wpilib.command2.Commands;
 import frc.robot.AutoMovements.FieldPoints;
+import frc.robot.imu.BumpCrossingTracker;
 import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
 import frc.robot.lib.BLine.FollowPath;
@@ -16,6 +18,7 @@ import frc.robot.lib.BLine.Path.RangedConstraint;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * A fluent builder for creating autonomous routines using BLine path following.
@@ -39,6 +42,7 @@ public class AutoRoutine {
   private final SwerveSubsystem swerve;
   private final LocalizationSubsystem localization;
   private final FollowPath.Builder pathBuilder;
+  private final BumpCrossingTracker bumpCrossingTracker;
   private final boolean mirror;
   private final List<Command> steps = new ArrayList<>();
   private Pose2d startPose = null;
@@ -69,24 +73,28 @@ public class AutoRoutine {
 
 
   private AutoRoutine(SwerveSubsystem swerve, LocalizationSubsystem localization,
-                      FollowPath.Builder pathBuilder, boolean mirror) {
+                      FollowPath.Builder pathBuilder, BumpCrossingTracker bumpCrossingTracker,
+                      boolean mirror) {
     this.swerve = swerve;
     this.localization = localization;
     this.pathBuilder = pathBuilder;
+    this.bumpCrossingTracker = bumpCrossingTracker;
     this.mirror = mirror;
   }
 
   /** Create a new auto routine builder using BLine path following. */
   public static AutoRoutine create(SwerveSubsystem swerve, LocalizationSubsystem localization,
-                                   FollowPath.Builder pathBuilder) {
-    return new AutoRoutine(swerve, localization, pathBuilder, false);
+                                   FollowPath.Builder pathBuilder,
+                                   BumpCrossingTracker bumpCrossingTracker) {
+    return new AutoRoutine(swerve, localization, pathBuilder, bumpCrossingTracker, false);
   }
 
   /** Create a new auto routine builder that mirrors all poses (red → blue). */
   public static AutoRoutine createMirrored(SwerveSubsystem swerve,
                                            LocalizationSubsystem localization,
-                                           FollowPath.Builder pathBuilder) {
-    return new AutoRoutine(swerve, localization, pathBuilder, true);
+                                           FollowPath.Builder pathBuilder,
+                                           BumpCrossingTracker bumpCrossingTracker) {
+    return new AutoRoutine(swerve, localization, pathBuilder, bumpCrossingTracker, true);
   }
 
   // ---- Starting pose ----
@@ -185,6 +193,56 @@ public class AutoRoutine {
   public AutoRoutine runUntil(java.util.function.BooleanSupplier condition, Command cmd) {
     flushPendingPath();
     steps.add(cmd.until(condition));
+    return this;
+  }
+
+  // ---- Bump crossing ----
+
+  /**
+   * Arms a bump crossing for the next driveTo. While the IMU reports the robot tilted along
+   * {@code crossingDirection}, the drive commits to a fixed speed across the bump instead of
+   * tracking the path, because the pose estimate is not trustworthy mid-bump.
+   *
+   * <p>This flushes the pending path, so the crossing runs as its own BLine segment.
+   *
+   * @param crossingDirection field-relative direction of travel across the bump, given in RED
+   *     coordinates like every other pose here; it is mirrored for blue automatically
+   */
+  public AutoRoutine bumpCross(Rotation2d crossingDirection) {
+    return bumpCross(crossingDirection, null);
+  }
+
+  /**
+   * Arms a bump crossing that also re-localizes on landing.
+   *
+   * @param crossingDirection field-relative direction of travel, in RED coordinates
+   * @param landingPoint where the robot physically ends up once flat on the far side, in RED
+   *     coordinates. This hard-resets the pose translation, so a wrong value is worse than none --
+   *     measure it, do not infer it from the path waypoints.
+   */
+  public AutoRoutine bumpCross(Rotation2d crossingDirection, Translation2d landingPoint) {
+    flushPendingPath();
+
+    // mirrorPose reflects across field center X and maps heading to 180 - heading, so the crossing
+    // direction has to go through the same transform rather than being used as authored.
+    Rotation2d direction =
+        mirror
+            ? FieldPoints.mirrorPose(new Pose2d(Translation2d.kZero, crossingDirection))
+                .getRotation()
+            : crossingDirection;
+    Optional<Translation2d> landing =
+        landingPoint == null
+            ? Optional.empty()
+            : Optional.of(
+                mirror
+                    ? FieldPoints.mirrorPose(new Pose2d(landingPoint, Rotation2d.kZero))
+                        .getTranslation()
+                    : landingPoint);
+
+    steps.add(
+        Commands.runOnce(() -> bumpCrossingTracker.bumpCrossRequest(direction, landing))
+            .withName("ArmBumpCrossing"));
+
     return this;
   }
 

@@ -18,6 +18,7 @@ import frc.robot.Intake.BeamBreak;
 import frc.robot.Intake.IntakePosition;
 import frc.robot.Intake.intaker;
 import org.wpilib.math.filter.Debouncer;
+import frc.robot.imu.BumpCrossingTracker;
 import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
 import frc.robot.lib.BLine.FollowPath;
@@ -28,7 +29,7 @@ import java.util.Map;
  *
  * ===== HOW TO ADD A NEW AUTO =====
  * 1. Add a new method below (copy an existing one as a template)
- * 2. Use AutoRoutine.create(swerve, localization, pathBuilder) to start building
+ * 2. Use AutoRoutine.create(swerve, localization, pathBuilder, bumpCrossingTracker) to start building
  * 3. Chain steps:
  *      .startAt(x, y, deg)            - set starting pose
  *      .driveTo(x, y, deg)            - drive to a field pose
@@ -52,6 +53,7 @@ public class PointToPointAutos {
   private final SwerveSubsystem swerve;
   private final LocalizationSubsystem localization;
   private final FollowPath.Builder pathBuilder;
+  private final BumpCrossingTracker bumpCrossingTracker;
   private final Drum drum;
   private final DrumStateMachine drumSM;
   private final HoodStateMachine hoodSM;
@@ -69,6 +71,7 @@ public class PointToPointAutos {
       SwerveSubsystem swerve,
       LocalizationSubsystem localization,
       FollowPath.Builder pathBuilder,
+      BumpCrossingTracker bumpCrossingTracker,
       Drum drum,
       DrumStateMachine drumSM,
       HoodStateMachine hoodSM,
@@ -83,6 +86,7 @@ public class PointToPointAutos {
     this.swerve = swerve;
     this.localization = localization;
     this.pathBuilder = pathBuilder;
+    this.bumpCrossingTracker = bumpCrossingTracker;
     this.drum = drum;
     this.drumSM = drumSM;
     this.hoodSM = hoodSM;
@@ -269,14 +273,18 @@ public class PointToPointAutos {
    */
   private Command SideAuto(boolean mirrorAlliance, boolean leftSide) {
     var routine = mirrorAlliance
-        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder)
-        : AutoRoutine.create(swerve, localization, pathBuilder);
+        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder, bumpCrossingTracker)
+        : AutoRoutine.create(swerve, localization, pathBuilder, bumpCrossingTracker);
     Command command = routine
         .startAt(sidePose("start", 12.16, 7.383, 90, leftSide))
         .run(startIntaking()) // don't cut off intaking early if we get stuck on the first waypoint
         .driveToAll(sidePose("firstPickupOuter", 8.88, 7.321, 115, leftSide))
         .driveToAll(sidePose("firstPickupInner", 8.88, 4.471, 115, leftSide))
         .driveToAll(sidePose("lineupToBump", 9.71, 5.67, 270, leftSide))
+        // Crossing runs +X in red coords (9.71 -> 13.2). No landing point yet: a pose reset to a
+        // guessed location is worse than none, so this is velocity override only until the real
+        // landing spot is measured.
+        .bumpCross(Rotation2d.kZero)
         .driveToAll(sidePose("firstShootApproach", 13.2, 5.67, 270, leftSide))
         .driveToAll(sidePose("firstShoot", 13.7, 5.2, 195, leftSide))
         .runFor(3, startShooting())
@@ -287,6 +295,7 @@ public class PointToPointAutos {
         .driveToAll(sidePose("secondPickupInner", 9.38, 3.99, 90, leftSide), 2.7)
         .driveToAll(sidePose("secondPickupHubSlam", 10.58, 4.0, 269, leftSide), 2.7)
         .driveToAll(sidePose("lineupToBump2", 9.71, 5.67, 270, leftSide))
+        .bumpCross(Rotation2d.kZero)
         .driveToAll(sidePose("secondShootApproach", 13.2, 5.67, 270, leftSide))
         .driveToAll(sidePose("secondShoot", 13.7, 5.2, 270, leftSide))
         .runFor(3, startShooting())
@@ -301,8 +310,8 @@ public class PointToPointAutos {
 
   private Command MiddleAuto(boolean mirror) {
     var routine = mirror
-        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder)
-        : AutoRoutine.create(swerve, localization, pathBuilder);
+        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder, bumpCrossingTracker)
+        : AutoRoutine.create(swerve, localization, pathBuilder, bumpCrossingTracker);
     return routine
         .startAt(13.02, 4.05, 180)
         .driveToAll(14.9, 4.05, 180)
@@ -315,8 +324,8 @@ public class PointToPointAutos {
 
   private Command MiddleAutoDepot(boolean mirror) {
     var routine = mirror
-        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder)
-        : AutoRoutine.create(swerve, localization, pathBuilder);
+        ? AutoRoutine.createMirrored(swerve, localization, pathBuilder, bumpCrossingTracker)
+        : AutoRoutine.create(swerve, localization, pathBuilder, bumpCrossingTracker);
     return routine
         .startAt(13.02, 4.05, 180)
         .run(startIntaking()) 

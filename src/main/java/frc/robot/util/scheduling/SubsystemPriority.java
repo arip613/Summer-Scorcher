@@ -7,6 +7,8 @@ public enum SubsystemPriority {
   IMU(23),
   // Vision runs before localization so that it has fresh vision data for pose estimator
   VISION(22),
+  // Bump crossing needs fresh IMU tilt, and its landing pose reset must land before localization
+  BUMP_CROSSING(22),
   // Swerve needs to have fresh data for localization
   SWERVE(21),
   // Localization runs before arm and shooter so that they have fresh speaker distance values

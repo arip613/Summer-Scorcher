@@ -17,6 +17,7 @@ import org.wpilib.command2.CommandScheduler;
 import org.wpilib.command2.Commands;
 import org.wpilib.command2.button.CommandGamepad;
 import org.wpilib.command2.button.Trigger;
+import frc.robot.imu.BumpCrossingTracker;
 import frc.robot.imu.ImuSubsystem;
 import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
@@ -167,6 +168,7 @@ public class Robot extends TimedRobot {
 
 
   private final FollowPath.Builder blinePathBuilder;
+  private final BumpCrossingTracker bumpCrossingTracker;
   private final phaseTimer phaseTimer = new phaseTimer();
   private final PointToPointAutos pointToPointAutos;
   private boolean prevOperatorX = false;
@@ -283,12 +285,19 @@ public class Robot extends TimedRobot {
         0.2    // intermediate handoff radius m
     ));
 
+    bumpCrossingTracker = new BumpCrossingTracker(imu, localization::resetTranslationOnly);
+
     // AutoRoutine mirrors its red-source poses itself, so BLine must not flip them again.
+    // The speeds consumer is wrapped rather than the follower because BLine has no follower
+    // seam: this is the same interception point 581's BumpCrossingFollower uses, one layer down.
     blinePathBuilder = new FollowPath.Builder(
         swerve,
         localization::getPose,
         swerve::getRobotRelativeSpeeds,
-        swerve::setRobotRelativeAutoSpeeds,
+        speeds ->
+            swerve.setRobotRelativeAutoSpeeds(
+                bumpCrossingTracker.applyCrossingOverride(
+                    speeds, localization.getPose().getRotation())),
         new PIDController(2.5, 0.0, 0.0),  // translation: bounded by 12.0 / 4.5 = 2.66
         new PIDController(4.0, 0.0, 0.0),  // rotation:    bounded by 860 / 200 = 4.3
         new PIDController(2.0, 0.0, 0.0)); // cross-track: unclamped by BLine, left alone
@@ -297,7 +306,7 @@ public class Robot extends TimedRobot {
 
     // Set up point-to-point auto chooser (shows on SmartDashboard as "Auto Chooser")
   pointToPointAutos = new PointToPointAutos(
-    swerve, localization, blinePathBuilder, drum, drumSM, hoodSM,
+    swerve, localization, blinePathBuilder, bumpCrossingTracker, drum, drumSM, hoodSM,
     headingLock, turretLookup, indexer, hopper, intakeRoller, intakePosition, beamBreak);
 
     ElasticLayoutUtil.onBoot();
