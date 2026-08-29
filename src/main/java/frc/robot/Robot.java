@@ -420,7 +420,9 @@ public class Robot extends TimedRobot {
     // The intake's initial state is OFF, which commands CoastOut -- the arm is unheld and settles
     // wherever gravity leaves it. Hold it at the deployed position instead, so enable puts the arm
     // at the tuned working height (Intake/Tune/DeployRotations) rather than letting it sag.
-    intakePosition.retract();
+    // This said retract(), against the stated intent right above it, so the arm lifted on every
+    // teleop enable.
+    intakePosition.deploy();
 
     ElasticLayoutUtil.onEnable();
 

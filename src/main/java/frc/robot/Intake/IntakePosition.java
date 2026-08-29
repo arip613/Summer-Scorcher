@@ -24,7 +24,7 @@ public class IntakePosition extends StateMachine<IntakePosition.State> {
 			DEPLOY,
 			RETRACT,
 			SHOOTER,
-			/** Staged agitation: 20% of travel, then 50%, then all the way down. */
+			/** Looping staged agitation: 20% of travel, 50%, all the way down, all the way up. */
 			PULSE,
 			/** Sweeps the full travel end to end, for use while a shot is being taken. */
 			SWING,
@@ -54,7 +54,7 @@ public class IntakePosition extends StateMachine<IntakePosition.State> {
 	 * PULSE agitation stages: how far to raise the arm from the deployed end, as a fraction of the
 	 * full travel, with how long to hold each before moving on. 0.0 is fully deployed, 1.0 is fully
 	 * retracted. The sequence tilts up a fifth, then half, drops back down, then sweeps all the way
-	 * to retracted and holds there.
+	 * to retracted -- and then repeats from the start for as long as PULSE is held.
 	 */
 	private static final double[] SWING_STAGE_FRACTIONS = {0.20, 0.50, 0.00, 1.00};
 
@@ -190,7 +190,11 @@ cfg.MotorOutput = new MotorOutputConfigs()
 	/** Retract elevator back to boot/zero position. */
 	public void retract() { setStateFromRequest(State.RETRACT); }
 
-	/** Staged agitation: 20% of travel, then 50%, then all the way down. */
+	/**
+	 * Looping staged agitation: 20% of travel, then 50%, then all the way down, then all the way
+	 * up, repeating until the state changes. Safe to call every loop -- the request is idempotent
+	 * and the cycle advances on its own.
+	 */
 	public void pulse() { setStateFromRequest(State.PULSE); }
 
 	/** Sweep the full travel end to end, for use while shooting. */
@@ -229,20 +233,25 @@ cfg.MotorOutput = new MotorOutputConfigs()
 			}
 
 			if (getState() == State.PULSE) {
-				// Staged, not a timer toggle: hold 20% of travel, then 50%, then drop all the way
-				// down and stay. Advancing only on elapsed time keeps each stage a fixed duration
-				// regardless of how fast the arm actually gets there.
+				// Staged rather than a timer toggle: 20% of travel, then 50%, then all the way
+				// down, then all the way up -- and then around again for as long as the state is
+				// held. Each stage ends on whichever comes first, reaching the target or the stage
+				// timeout, so a stage that cannot physically complete still advances.
+				//
+				// The cycle must wrap. It used to stop on the last stage, which left the arm parked
+				// fully retracted with swingStage stuck at the end. Re-requesting PULSE did not
+				// restart it either, because setStateFromRequest is a no-op when already in the
+				// state and the stage counter only resets on a transition -- so the agitation ran
+				// exactly once per entry into PULSE and never again.
 				double now = Timer.getTimestamp();
-				if (swingStage < SWING_STAGE_FRACTIONS.length - 1) {
-					double stageTarget = raisedByFraction(SWING_STAGE_FRACTIONS[swingStage]);
-					boolean reached =
-							Math.abs(currentRotations() - stageTarget) <= STAGE_TOLERANCE_ROTATIONS;
-					boolean timedOut = now - swingStageStart >= STAGE_TIMEOUT_SECONDS;
-					if (reached || timedOut) {
-						swingStage++;
-						swingStageStart = now;
-						goToAgitate(raisedByFraction(SWING_STAGE_FRACTIONS[swingStage]));
-					}
+				double stageTarget = raisedByFraction(SWING_STAGE_FRACTIONS[swingStage]);
+				boolean reached =
+						Math.abs(currentRotations() - stageTarget) <= STAGE_TOLERANCE_ROTATIONS;
+				boolean timedOut = now - swingStageStart >= STAGE_TIMEOUT_SECONDS;
+				if (reached || timedOut) {
+					swingStage = (swingStage + 1) % SWING_STAGE_FRACTIONS.length;
+					swingStageStart = now;
+					goToAgitate(raisedByFraction(SWING_STAGE_FRACTIONS[swingStage]));
 				}
 			} else if (getState() == State.SWING) {
 				// Sweep end to end for as long as the state is held.

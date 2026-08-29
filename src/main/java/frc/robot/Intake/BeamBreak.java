@@ -42,7 +42,7 @@ public class BeamBreak extends LifecycleSubsystem {
    * the latest reading -- no filtering, no debounce.
    */
   private static final String BALL_THRESHOLD_KEY = "BeamBreak/Tune/BallThresholdMeters";
-  private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.60;
+  private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.75;
 
   private final CANrange sensor;
   private final StatusSignal<Boolean> detectedSignal;
@@ -85,7 +85,9 @@ public class BeamBreak extends LifecycleSubsystem {
       System.out.println("[BeamBreak] CANrange setup failed, sensor will read as absent: " + ex);
     }
 
-    SmartDashboard.putNumber(BALL_THRESHOLD_KEY, DEFAULT_BALL_THRESHOLD_METERS);
+    // setDefaultNumber, not putNumber: putNumber overwrites the tuned value on every boot, so a
+    // threshold dialled in on the dashboard silently reverted on the next redeploy.
+    SmartDashboard.setDefaultNumber(BALL_THRESHOLD_KEY, DEFAULT_BALL_THRESHOLD_METERS);
   }
 
   /** True while the raw distance reading is under the ball threshold. Unfiltered. */
