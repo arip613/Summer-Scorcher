@@ -44,8 +44,12 @@ public class AutoRoutine {
 
   // Accumulated waypoints for the current BLine path segment.
   private final List<Waypoint> pendingWaypoints = new ArrayList<>();
+  // Poses backing pendingWaypoints, kept so the batch length can be measured for the timeout.
+  private final List<Pose2d> pendingPoses = new ArrayList<>();
   // Per-waypoint max speed constraints (null = use default)
   private final List<Double> pendingMaxSpeeds = new ArrayList<>();
+  // Where the previous batch ended, so batch length is measured from the right origin.
+  private Pose2d lastFlushedPose = null;
 
   // Queued parallel commands to run alongside the NEXT drive path
   private final List<Command> pendingParallel = new ArrayList<>();
@@ -53,7 +57,14 @@ public class AutoRoutine {
 
   // Safety timeout: if a drive segment takes longer than this, skip it and move on.
   // Prevents the entire auto from stalling if the robot gets stuck or pose is wrong.
-  private static final double DRIVE_SAFETY_TIMEOUT_SECS = 8.0;
+  //
+  // This must scale with the batch. flushPendingPath() collapses every consecutive driveTo into
+  // ONE BLine path, so a flat timeout is a budget for the whole batch rather than for one hop --
+  // the 8s flat value was shorter than the ~14m second half of SideAuto takes to drive, which cut
+  // the path off partway and dropped the robot wherever it happened to be when the clock ran out.
+  private static final double DRIVE_TIMEOUT_BASE_SECS = 3.0;
+  private static final double DRIVE_TIMEOUT_ASSUMED_SPEED_MPS = 1.5;
+  private static final double DRIVE_TIMEOUT_MAX_SECS = 15.0;
 
 
   private AutoRoutine(SwerveSubsystem swerve, LocalizationSubsystem localization,
@@ -81,6 +92,7 @@ public class AutoRoutine {
 
   public AutoRoutine startAt(Pose2d pose) {
     this.startPose = maybeMirror(pose);
+    this.lastFlushedPose = this.startPose;
     return this;
   }
 
@@ -120,6 +132,7 @@ public class AutoRoutine {
 
   private void addWaypoint(Pose2d pose, Double maxSpeed) {
     pendingWaypoints.add(new Waypoint(pose));
+    pendingPoses.add(pose);
     pendingMaxSpeeds.add(maxSpeed);
   }
 
@@ -238,7 +251,7 @@ public class AutoRoutine {
     Command drive = pathBuilder.build(path);
     double timeout = pendingTimeoutSeconds != null
         ? pendingTimeoutSeconds
-        : DRIVE_SAFETY_TIMEOUT_SECS;
+        : safetyTimeoutFor(pendingPathLengthMeters(), minMaxSpeed);
 
     pendingTimeoutSeconds = null;
 
@@ -255,7 +268,47 @@ public class AutoRoutine {
       steps.add(drive.withTimeout(timeout).withName("BLineDrive"));
     }
 
+    if (!pendingPoses.isEmpty()) {
+      lastFlushedPose = pendingPoses.get(pendingPoses.size() - 1);
+    }
+
     pendingWaypoints.clear();
+    pendingPoses.clear();
     pendingMaxSpeeds.clear();
+  }
+
+  /**
+   * Straight-line length of the batch about to be flushed, measured from wherever the previous
+   * batch ended. BLine drives waypoint-to-waypoint in straight segments, so this is a good
+   * estimate of the distance the robot actually covers.
+   */
+  private double pendingPathLengthMeters() {
+    double length = 0.0;
+    Pose2d previous = lastFlushedPose;
+
+    for (Pose2d pose : pendingPoses) {
+      if (previous != null) {
+        length += previous.getTranslation().getDistance(pose.getTranslation());
+      }
+      previous = pose;
+    }
+
+    return length;
+  }
+
+  /**
+   * Safety timeout for a drive batch of the given length. Generous on purpose: this is a
+   * stuck-robot escape hatch, not a schedule. If it fires during a normal run the path is cut off
+   * partway and the rest of the auto continues from an unplanned pose, which is far worse than
+   * simply arriving late.
+   */
+  private static double safetyTimeoutFor(double pathLengthMeters, Double batchMaxSpeed) {
+    double assumedSpeed = batchMaxSpeed != null
+        ? Math.min(batchMaxSpeed, DRIVE_TIMEOUT_ASSUMED_SPEED_MPS)
+        : DRIVE_TIMEOUT_ASSUMED_SPEED_MPS;
+
+    double estimate = DRIVE_TIMEOUT_BASE_SECS + (pathLengthMeters / assumedSpeed);
+
+    return Math.min(estimate, DRIVE_TIMEOUT_MAX_SECS);
   }
 }
