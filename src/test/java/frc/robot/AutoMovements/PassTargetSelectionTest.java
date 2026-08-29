@@ -61,7 +61,10 @@ class PassTargetSelectionTest {
     Translation2d picked = pick(10.81, 1.71, true);
 
     assertEquals(
-        FieldPoints.FIELD_WIDTH - 7.0, picked.getY(), 1e-9, "should aim at the true low-Y target");
+        FieldPoints.PASS_TARGET_LEFT.getY(),
+        picked.getY(),
+        1e-9,
+        "should aim at the low-Y target");
     assertTrue(picked.getY() < CENTER_Y, "target must be on the robot's own half");
   }
 

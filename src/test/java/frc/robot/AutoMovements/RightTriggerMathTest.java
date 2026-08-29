@@ -20,8 +20,8 @@ class RightTriggerMathTest {
    */
   @Test
   void choosesNearestPassTarget() {
-    Translation2d lowTarget = new Translation2d(14.0, FieldPoints.FIELD_WIDTH - 7.0);
-    Translation2d highTarget = new Translation2d(14.0, 7.0);
+    Translation2d lowTarget = FieldPoints.PASS_TARGET_LEFT;
+    Translation2d highTarget = FieldPoints.PASS_TARGET_RIGHT;
 
     assertEquals(
         lowTarget,

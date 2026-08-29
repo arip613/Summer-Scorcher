@@ -75,7 +75,7 @@ public final class FieldPoints {
   // low-Y half aimed at the middle of the field instead of across it.
   //
   // Derived rather than written out, so the two cannot drift apart again.
-  public static final Translation2d PASS_TARGET_RIGHT = new Translation2d(14.0, 7.0);
+  public static final Translation2d PASS_TARGET_RIGHT = new Translation2d(14.0, 6.0);
   public static final Translation2d PASS_TARGET_LEFT  =
       new Translation2d(14.0, FIELD_WIDTH - PASS_TARGET_RIGHT.getY());
   public static final Translation2d PASS_TARGET_RIGHT_BLUE = mirrorTranslation(PASS_TARGET_RIGHT);
