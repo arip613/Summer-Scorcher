@@ -3,6 +3,7 @@ package frc.robot.localization;
 import org.wpilib.system.Timer;
 import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.math.geometry.Rotation2d;
+import org.wpilib.math.geometry.Translation2d;
 import org.wpilib.math.kinematics.ChassisVelocities;
 import org.wpilib.networktables.DoubleArrayPublisher;
 import org.wpilib.networktables.NetworkTableInstance;
@@ -29,6 +30,13 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
   private static final double VISION_LOSS_LATCH_TIME_S = 5.0;
   private static final double RECOVERY_SEQUENCE_MAX_GAP_S = 0.25;
   private static final double HARD_RESET_MIN_TRANSLATION_ERROR_M = 0.25;
+  /**
+   * Reject vision while the robot is tilted more than this far off level. A tag solve assumes the
+   * camera sits at its calibrated offset from the robot origin; when the robot pitches or rolls
+   * over a bump the camera swings well outside that offset, and the solve comes back confidently
+   * wrong rather than merely noisy. Matches the flat threshold BumpCrossingTracker uses.
+   */
+  private static final double MAX_VISION_TILT_DEGREES = 4.0;
 
 
   private final ImuSubsystem imu;
@@ -136,6 +144,7 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
     }
 
     SmartDashboard.putBoolean("Localization/VisionRecoveryPending", visionRecoveryPending);
+    SmartDashboard.putNumber("Localization/TiltFromLevelDeg", tiltFromLevelDegrees());
 
     updateHeadingFromRightVision();
 
@@ -160,7 +169,24 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
 
   }
 
+  /**
+   * Angle between robot-up and field-up, in degrees. Combines pitch and roll into a single tilt
+   * magnitude so the gate holds at any heading -- crossing a bump sideways shows up as roll, not
+   * pitch, and checking only one axis would miss it.
+   */
+  private double tiltFromLevelDegrees() {
+    double pitch = Math.toRadians(imu.getPitch());
+    double roll = Math.toRadians(imu.getRoll());
+
+    return Math.toDegrees(Math.acos(Math.clamp(Math.cos(pitch) * Math.cos(roll), -1.0, 1.0)));
+  }
+
   private void updateHeadingFromRightVision() {
+    if (tiltFromLevelDegrees() > MAX_VISION_TILT_DEGREES) {
+      SmartDashboard.putString("Localization/VisionStatus", "rejected: robot tilted");
+      return;
+    }
+
     // Always blue-origin: the drivetrain pose estimator is blue-origin, so a red-origin
     // botpose would be flipped 180 degrees.
     var mt1Estimate = LimelightHelpers.getBotPoseEstimate_wpiBlue(RIGHT_LIMELIGHT_NAME);
@@ -185,6 +211,13 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
 
   private boolean ingestTagResult(TagResult result, double now) {
     var visionPose = result.pose();
+
+    double tiltDegrees = tiltFromLevelDegrees();
+    if (tiltDegrees > MAX_VISION_TILT_DEGREES) {
+      SmartDashboard.putString("Localization/VisionStatus", "rejected: robot tilted");
+      SmartDashboard.putNumber("Localization/VisionRejectedTiltDeg", tiltDegrees);
+      return false;
+    }
 
     if (!isStdDevAcceptable(result.standardDevs())) {
       SmartDashboard.putString("Localization/VisionStatus", "rejected: xy std dev too high");
@@ -290,6 +323,15 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
     // resetPose sets both position and rotation in one atomic operation.
     // No separate resetRotation needed — it would just be overwritten.
     swerve.resetPose(estimatedPose);
+  }
+
+  /**
+   * Resets only the translation of the pose estimate, keeping the estimator's own heading. Used by
+   * the bump crossing tracker to re-localize on a known landing point, where the gyro heading is
+   * still trustworthy but wheel odometry through the bump is not.
+   */
+  public void resetTranslationOnly(Translation2d translation) {
+    swerve.resetPose(new Pose2d(translation, swerve.getDrivetrainState().Pose.getRotation()));
   }
 
   public void resetPoseXYOnly(Pose2d estimatedPose) {
