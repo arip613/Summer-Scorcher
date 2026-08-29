@@ -26,10 +26,16 @@ public class Hood {
 
 		var cfg = new TalonFXConfiguration();
 		cfg.Slot0 = new Slot0Configs().withKP(50).withKI(0).withKD(0);
+		// Jerk turns the trapezoid into an S-curve. Without it Motion Magic changes acceleration
+		// instantaneously, so the hood slams from full deceleration to zero at the setpoint -- that
+		// corner is what the abrupt stop is. 1200 rot/s^3 is 10x the acceleration, which rounds the
+		// entry and exit of each ramp over about 0.1s (accel / jerk) and costs roughly that much on
+		// a move. Lower it for a softer stop at the price of a slower hood.
 		cfg.MotionMagic =
 				new MotionMagicConfigs()
 						.withMotionMagicCruiseVelocity(100.0)
-						.withMotionMagicAcceleration(120);
+						.withMotionMagicAcceleration(120)
+						.withMotionMagicJerk(1200);
 		cfg.CurrentLimits = new CurrentLimitsConfigs()
 				.withSupplyCurrentLimit(20.0)
 				.withSupplyCurrentLimitEnable(true)

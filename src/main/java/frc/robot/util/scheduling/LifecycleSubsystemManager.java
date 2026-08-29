@@ -23,8 +23,10 @@ public final class LifecycleSubsystemManager {
 
   private static final List<LifecycleSubsystem> subsystems = new ArrayList<>();
   private static final CommandScheduler commandScheduler = CommandScheduler.getInstance();
+  private static boolean ready = false;
 
   public static void ready() {
+    ready = true;
     subsystems.sort(
         Comparator.comparingInt((LifecycleSubsystem subsystem) -> subsystem.priority.value)
             .reversed());
@@ -38,6 +40,22 @@ public final class LifecycleSubsystemManager {
 
   static void registerSubsystem(LifecycleSubsystem subsystem) {
     subsystems.add(subsystem);
+
+    if (ready) {
+      // Constructed after ready() already ran. Unregistering here would leave the subsystem with
+      // no periodic at all, and nothing would say so -- BumpCrossingTracker was built this way and
+      // its state machine simply never ticked, so a crossing armed and never finished, holding an
+      // open loop drive override for the rest of auto. Register it immediately instead, and say
+      // something, because the ordering is still worth fixing at the source.
+      System.out.println(
+          "[LifecycleSubsystemManager] "
+              + subsystem.getClass().getSimpleName()
+              + " was constructed after ready(); registering it directly. Construct it before"
+              + " ready() so it runs in priority order.");
+      commandScheduler.registerSubsystem(subsystem);
+      return;
+    }
+
     commandScheduler.unregisterSubsystem(subsystem);
   }
 

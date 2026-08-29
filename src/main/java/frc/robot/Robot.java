@@ -140,6 +140,10 @@ public class Robot extends TimedRobot {
       () -> swerve.getDrivetrainState().Pose.getRotation().getDegrees(),
       hardware.leftLimelight, hardware.rightLimelight);
   private final LocalizationSubsystem localization = new LocalizationSubsystem(imu, vision, swerve);
+  // A field initializer, not a constructor-body assignment: LifecycleSubsystemManager.ready() runs
+  // partway through the constructor, and anything built after it never gets a periodic.
+  private final BumpCrossingTracker bumpCrossingTracker =
+      new BumpCrossingTracker(imu, localization::resetTranslationOnly);
   private final HeadingLock headingLock = new HeadingLock(localization, swerve);
   private final DistanceCalc distanceCalc = new DistanceCalc(localization, headingLock);
   private final Drum drum = new Drum(
@@ -168,7 +172,6 @@ public class Robot extends TimedRobot {
 
 
   private final FollowPath.Builder blinePathBuilder;
-  private final BumpCrossingTracker bumpCrossingTracker;
   private final phaseTimer phaseTimer = new phaseTimer();
   private final PointToPointAutos pointToPointAutos;
   private boolean prevOperatorX = false;
@@ -284,8 +287,6 @@ public class Robot extends TimedRobot {
         2.0,   // end rotation tolerance deg
         0.2    // intermediate handoff radius m
     ));
-
-    bumpCrossingTracker = new BumpCrossingTracker(imu, localization::resetTranslationOnly);
 
     // AutoRoutine mirrors its red-source poses itself, so BLine must not flip them again.
     // The speeds consumer is wrapped rather than the follower because BLine has no follower

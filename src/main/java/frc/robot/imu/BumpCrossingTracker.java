@@ -12,6 +12,7 @@ import org.wpilib.math.geometry.Translation2d;
 import org.wpilib.math.geometry.Translation3d;
 import org.wpilib.math.kinematics.ChassisVelocities;
 import org.wpilib.smartdashboard.SmartDashboard;
+import org.wpilib.system.Timer;
 
 /**
  * Detects a bump crossing from IMU tilt and commits the drive to a fixed speed across it.
@@ -39,6 +40,18 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   private static final double APPROACH_TIMEOUT_SECONDS = 1.5;
 
   private static final double ON_BUMP_TIMEOUT_SECONDS = 1.5;
+
+  /**
+   * Hard wall-clock ceiling on how long the drive override may be applied for one crossing,
+   * independent of the state machine.
+   *
+   * <p>The per-phase timeouts are only evaluated inside getNextState, so they are worth nothing if
+   * the state machine stops ticking. That happened: the tracker was constructed after
+   * LifecycleSubsystemManager.ready() and never got a periodic, so a crossing armed in auto held a
+   * 4 m/s open loop command until the match period ended. The ordering is fixed, but an open loop
+   * override with no independent bound is not something to rely on a single mechanism for.
+   */
+  private static final double OVERRIDE_HARD_LIMIT_SECONDS = 5.0;
 
   /**
    * Speed commanded along the crossing direction while on the bump, matching 581.
@@ -92,6 +105,7 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   private Rotation2d crossingDirection = Rotation2d.kZero;
   private Optional<Translation2d> landingPoint = Optional.empty();
   private double directionalTilt = 0.0;
+  private double crossingArmedTimestamp = 0.0;
   private boolean isFlat = true;
   private boolean isFlatFallbackDebounced = false;
   private int completedCrossings = 0;
@@ -123,6 +137,7 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
       Rotation2d crossingDirection, Optional<Translation2d> landingPoint) {
     this.crossingDirection = crossingDirection;
     this.landingPoint = landingPoint;
+    crossingArmedTimestamp = Timer.getTimestamp();
     setStateFromRequest(BumpCrossingState.FLAT_ABOUT_TO_CROSS);
   }
 
@@ -214,6 +229,14 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   public ChassisVelocities applyCrossingOverride(
       ChassisVelocities robotRelativeSpeeds, Rotation2d heading) {
     if (!getState().isCrossing()) {
+      return robotRelativeSpeeds;
+    }
+
+    if (Timer.getTimestamp() - crossingArmedTimestamp > OVERRIDE_HARD_LIMIT_SECONDS) {
+      // Past the ceiling: hand control back to the follower and stop reporting a crossing, whatever
+      // the state machine thinks. Better to track the path badly than to drive open loop blind.
+      SmartDashboard.putBoolean("BumpCrossing/OverrideHardLimitHit", true);
+      setStateFromRequest(BumpCrossingState.FLAT_NOT_CROSSING);
       return robotRelativeSpeeds;
     }
 
