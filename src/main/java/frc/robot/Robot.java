@@ -974,7 +974,9 @@ intakePosition.deploy();
               SmartDashboard.putNumber("Driver/FramesFedOffHeading", blockedHeading);
               SmartDashboard.putBoolean("Driver/HeadingSettled", headingReady);
             }
-            if (shootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD) {
+            boolean feeding = shootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD;
+            String armMode;
+            if (feeding) {
               // Keep feeding regardless -- only the arm motion changes. Ball presence must never
               // gate the shot here: the hopper going quiet is exactly when the last few balls
               // still need to be shot, so stopping would strand them.
@@ -985,10 +987,12 @@ intakePosition.deploy();
                 // deployed height and leave it alone -- moving it can only disturb a stack that is
                 // already feeding itself.
                 intakePosition.deploy();
+                armMode = "hold: shooting, ball at sensor";
               } else {
                 // Hopper has run low enough that nothing reaches the sensor. Switch to the staged
                 // agitation to work the stragglers down into the indexer while still shooting.
                 intakePosition.pulse();
+                armMode = "agitate: shooting, hopper low";
               }
             } else {
               indexer.stop();
@@ -998,9 +1002,21 @@ intakePosition.deploy();
               // arm down and let the gate clear.
               if (!beamBreak.hasBall()) {
                 intakePosition.pulse();
+                armMode = "agitate: blocked, no ball";
               } else {
                 intakePosition.deploy();
+                armMode = "hold: blocked, ball at sensor";
               }
+            }
+
+            if (ENABLE_DASHBOARD) {
+              // One field that says what the arm is doing and why, so a log dump answers "why is
+              // it not agitating" directly instead of by cross-referencing four other keys.
+              SmartDashboard.putString("Driver/IntakeArmMode", armMode);
+              SmartDashboard.putBoolean("Driver/Feeding", feeding);
+              SmartDashboard.putNumber("Driver/GoalRpm", turretLookup.getActiveRpm());
+              SmartDashboard.putNumber("Driver/ActualRpm", drum.getRpm());
+              SmartDashboard.putNumber("Driver/ShotDistanceMeters", params.distance());
             }
           } else {
             updatePassingBehavior();

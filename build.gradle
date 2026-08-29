@@ -118,3 +118,8 @@ wpi.java.configureTestTasks(test)
 tasks.withType(JavaCompile) {
     options.compilerArgs.add '-XDstringConcat=inline'
 }
+
+// temporary: print compile classpath
+tasks.register('printCp') {
+    doLast { println sourceSets.main.compileClasspath.asPath }
+}

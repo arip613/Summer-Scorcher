@@ -1,5 +1,6 @@
 package frc.robot.autos;
 
+import dev.doglog.DogLog;
 import org.wpilib.smartdashboard.SendableChooser;
 import org.wpilib.smartdashboard.SmartDashboard;
 import org.wpilib.command2.Command;
@@ -188,9 +189,10 @@ public class PointToPointAutos {
           double robotSpeed = Math.hypot(speeds.vx, speeds.vy);
           // Heading deliberately excluded, matching teleop: the heading lock keeps aiming, but a
           // snap that settles a couple of degrees short must not stall the shot forever.
-          boolean allReadyRaw = params.isValid()
-              && robotSpeed < SHOOT_SPEED_THRESHOLD
-              && drum.isAtGoal();
+          boolean validNow = params.isValid();
+          boolean slowEnough = robotSpeed < SHOOT_SPEED_THRESHOLD;
+          boolean drumReady = drum.isAtGoal();
+          boolean allReadyRaw = validNow && slowEnough && drumReady;
 
           if (autoShootReadyDebouncer.calculate(allReadyRaw)) {
             autoShootReadyFrames++;
@@ -198,7 +200,35 @@ public class PointToPointAutos {
             autoShootReadyFrames = 0;
           }
 
-          if (autoShootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD) {
+          // Auto published nothing about the shot gate, so an auto that drove the path correctly
+          // and then failed to score left no way to tell which gate held it. Same breakdown the
+          // teleop trigger logs.
+          String blocker;
+          if (!validNow) {
+            blocker = String.format("shot params invalid (%.2f m)", params.distance());
+          } else if (!slowEnough) {
+            blocker = String.format("moving %.2f m/s", robotSpeed);
+          } else if (!drumReady) {
+            blocker = String.format(
+                "drum off RPM by %.0f", turretLookup.getActiveRpm() - drum.getRpm());
+          } else {
+            blocker = "ready";
+          }
+          DogLog.log("Autos/Shoot/BlockedBy", blocker);
+          DogLog.log("Autos/Shoot/ParamsValid", validNow);
+          DogLog.log("Autos/Shoot/SlowEnough", slowEnough);
+          DogLog.log("Autos/Shoot/DrumReady", drumReady);
+          DogLog.log("Autos/Shoot/RobotSpeed", robotSpeed);
+          DogLog.log("Autos/Shoot/ReadyFrames", autoShootReadyFrames);
+          DogLog.log("Autos/Shoot/DistanceMeters", params.distance());
+          DogLog.log("Autos/Shoot/GoalRpm", turretLookup.getActiveRpm());
+          DogLog.log("Autos/Shoot/ActualRpm", drum.getRpm());
+          DogLog.log("Autos/Shoot/HasBall", beamBreak.hasBall());
+          DogLog.log("Autos/Shoot/HasBallRaw", beamBreak.hasBallRaw());
+
+          boolean feeding = autoShootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD;
+          String armMode;
+          if (feeding) {
             // Keep feeding regardless -- only the arm motion changes. Ball presence must never
             // gate the shot here: the hopper going quiet is exactly when the last few balls still
             // need to be shot, so stopping would strand them.
@@ -209,10 +239,12 @@ public class PointToPointAutos {
               // deployed height and leave it alone -- moving it can only disturb a stack that is
               // already feeding itself.
               intakePosition.deploy();
+              armMode = "hold: shooting, ball at sensor";
             } else {
               // Hopper has run low enough that nothing reaches the sensor. Switch to the staged
               // agitation to work the stragglers down into the indexer while still shooting.
               intakePosition.pulse();
+              armMode = "agitate: shooting, hopper low";
             }
           } else {
             indexer.stop();
@@ -221,10 +253,15 @@ public class PointToPointAutos {
             // (20% of travel, then 50%, then all the way down) to work a ball into position.
             if (!beamBreak.hasBall()) {
               intakePosition.pulse();
+              armMode = "agitate: blocked, no ball";
             } else {
               intakePosition.deploy();
+              armMode = "hold: blocked, ball at sensor";
             }
           }
+
+          DogLog.log("Autos/Shoot/Feeding", feeding);
+          DogLog.log("Autos/Shoot/IntakeArmMode", armMode);
         }))
         .withName("AutoShoot");
   }
