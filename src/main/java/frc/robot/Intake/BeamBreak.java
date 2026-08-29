@@ -29,8 +29,15 @@ public class BeamBreak extends LifecycleSubsystem {
    */
   private static final double PROXIMITY_HYSTERESIS_METERS = 0.02;
 
-  /** Reject readings weaker than this; low signal means the reading is not trustworthy. */
-  private static final double MIN_SIGNAL_STRENGTH = 2500.0;
+  /**
+   * Reject readings weaker than this; low signal means the reading is not trustworthy.
+   *
+   * <p>Measured on this robot: a ball in the staged position returns 1124-3198 (mean 2295), an
+   * empty hopper 210-474 (mean 330). 2500 sat above the mean of real ball readings, so it
+   * discarded roughly half of them. 800 clears every real detection while staying 1.7x above the
+   * strongest empty-hopper return.
+   */
+  private static final double MIN_SIGNAL_STRENGTH = 800.0;
 
   /** Filters single-sample dropouts so a brief glitch does not read as the object leaving. */
   private static final double DEBOUNCE_SECONDS = 0.04;
@@ -40,14 +47,21 @@ public class BeamBreak extends LifecycleSubsystem {
   /**
    * A ball is present when the distance is under this, in meters.
    *
-   * <p>An empty hopper reads about 1.0 m, the sensor ranging past the balls to whatever is behind
-   * them; a ball intercepts the beam closer than that. So the threshold belongs just under the
-   * empty baseline -- anything nearer than "empty" is a ball. 0.75 sat 0.25 m below it, which is
-   * enough margin that a ball not fully seated read as an empty hopper and started the agitation
-   * with balls still stacked.
+   * <p>Measured over ~360 samples of each state on this robot:
+   *
+   * <pre>
+   *   ball staged : 0.447 - 0.505 m  (mean 0.473, stdev 0.012)
+   *   empty       : 0.984 - 1.220 m  (mean 1.079, stdev 0.040)
+   * </pre>
+   *
+   * <p>The two populations are 0.479 m apart, so the threshold belongs in the middle of that gap
+   * rather than tucked under the empty baseline. 0.744 is the exact midpoint; 0.75 is 20 ball
+   * sigma above the closest empty-side reading and 5.8 empty sigma below the nearest empty
+   * reading, which is as balanced as this gets. The empty distribution is the noisier of the two
+   * (stdev 0.040 against 0.012), so if anything the threshold wants to sit slightly low, not high.
    */
   private static final String BALL_THRESHOLD_KEY = "BeamBreak/Tune/BallThresholdMeters";
-  private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.85;
+  private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.75;
 
   /**
    * Falling-edge debounce on the ball reading. Balls bounce, so a settling stack opens brief gaps
@@ -153,9 +167,15 @@ public class BeamBreak extends LifecycleSubsystem {
     detected = detectedDebouncer.calculate(detectedRaw);
 
     // A dead sensor reads 0.0 m, which would otherwise look like a ball pressed right against it,
-    // so require a live reading above zero.
+    // so require a live reading above zero. Signal strength is also checked here rather than left
+    // to the device: the CANrange still reports a distance for a weak return, and distance alone
+    // cannot tell a real ball from a spurious short read off dust or a reflection.
     double threshold = SmartDashboard.getNumber(BALL_THRESHOLD_KEY, DEFAULT_BALL_THRESHOLD_METERS);
-    hasBallRaw = ok && distanceMeters > 0.0 && distanceMeters < threshold;
+    hasBallRaw =
+        ok
+            && distanceMeters > 0.0
+            && distanceMeters < threshold
+            && signalStrength >= MIN_SIGNAL_STRENGTH;
     hasBall = hasBallDebouncer.calculate(hasBallRaw);
 
     SmartDashboard.putBoolean("BeamBreak/HasBall", hasBall);
