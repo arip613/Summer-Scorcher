@@ -131,6 +131,14 @@ public class Robot extends TimedRobot {
    */
   private final Debouncer shootZoneDebouncer = new Debouncer(0.3, Debouncer.DebounceType.kBoth);
 
+  /**
+   * Holds the pass feed on through the RPM dip a feeding ball causes. Sized from the dips measured
+   * in AZGLE4_Q29, which ran 0.08-0.24s; 0.25 rides through all of them without masking a drum
+   * that genuinely never reaches speed.
+   */
+  private final Debouncer passReadyDebouncer =
+      new Debouncer(0.25, Debouncer.DebounceType.kFalling);
+
   private Command autonomousCommand = Commands.none();
   private final Hardware hardware = new Hardware();
 
@@ -623,7 +631,14 @@ public class Robot extends TimedRobot {
     double robotSpeed = Math.hypot(speeds.vx, speeds.vy);
     boolean headingGood = Math.abs(headingError) <= 5.0;
     boolean slowEnough = robotSpeed < SHOOT_SPEED_THRESHOLD;
-    boolean passReady = headingGood && slowEnough && drum.isAtGoal() && hood.isAtGoal();
+    // Falling debounce, for the same reason the shot path has one. Every ball that feeds loads the
+    // drum and dips it out of RPM tolerance for 0.1-0.25s; without this, passReady drops the
+    // instant that happens, the indexer and hopper stop, and the feed sputters -- it stops
+    // feeding because it just fed. In match AZGLE4_Q29 the feed was on for only 31% and 37% of
+    // the two real pass attempts, toggling 8 and 7 times, and Pass/Ready tracked Pass/FlywheelReady
+    // to the exact frame. Rising is still immediate; four gates already have to agree.
+    boolean passReadyRaw = headingGood && slowEnough && drum.isAtGoal() && hood.isAtGoal();
+    boolean passReady = passReadyDebouncer.calculate(passReadyRaw);
 
     field2d.getObject("Pass Target").setPose(
         new Pose2d(activePassTarget, Rotation2d.kZero));
@@ -641,6 +656,8 @@ public class Robot extends TimedRobot {
       SmartDashboard.putBoolean("Pass/FlywheelReady", drum.isAtGoal());
       SmartDashboard.putBoolean("Pass/HoodReady", hood.isAtGoal());
       SmartDashboard.putBoolean("Pass/Ready", passReady);
+      // Undebounced, so the RPM dips stay visible instead of being hidden by the fix for them.
+      SmartDashboard.putBoolean("Pass/ReadyRaw", passReadyRaw);
     }
 
     if (passReady) {
