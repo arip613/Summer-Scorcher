@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import frc.robot.lib.BLine.Path;
 import frc.robot.lib.BLine.Path.PathConstraints;
+import frc.robot.lib.BLine.Path.EventTrigger;
 import frc.robot.lib.BLine.Path.RangedConstraint;
 import frc.robot.lib.BLine.Path.TranslationTargetConstraint;
 import frc.robot.lib.BLine.Path.Waypoint;
@@ -61,6 +62,57 @@ class BLineRangedConstraintContractTest {
       double actual = perWaypointSpeeds.get(i);
       System.out.println("waypoint " + i + " -> " + actual + " m/s (expected " + expected + ")");
       assertEquals(expected, actual, 1e-9, "waypoint " + i);
+    }
+  }
+
+  /**
+   * AutoRoutine.bumpCross() interleaves an EventTrigger into the element list rather than splitting
+   * the batch. Ordinals are per-type counters, so that must not shift the speed caps onto the wrong
+   * waypoints -- and the trigger must survive the waypoint expansion, or the crossing never arms.
+   */
+  @Test
+  void anInterleavedEventTriggerShiftsNothing() {
+    Path.setDefaultGlobalConstraints(
+        new Path.DefaultGlobalConstraints(4.5, 12.0, 200.0, 860.0, 0.03, 2.0, 0.2));
+
+    Double[] caps = {null, null, 2.7, 2.7, 2.7, null, null, null};
+
+    List<Path.PathElement> elements = new ArrayList<>();
+    List<RangedConstraint> ranged = new ArrayList<>();
+    for (int i = 0; i < caps.length; i++) {
+      elements.add(new Waypoint(new Pose2d(i, 0, Rotation2d.kZero)));
+      if (caps[i] != null) {
+        ranged.add(new RangedConstraint(caps[i], i, i));
+      }
+      // Mirrors SideAuto: a crossing armed after the sixth waypoint.
+      if (i == 5) {
+        elements.add(new EventTrigger(0.0, "test/bumpCross"));
+      }
+    }
+
+    Path path =
+        new Path(
+            elements,
+            new PathConstraints()
+                .setMaxVelocityMetersPerSec(ranged.toArray(new RangedConstraint[0])));
+
+    var resolved = path.getPathElementsWithConstraintsNoWaypoints();
+
+    List<Double> perWaypointSpeeds = new ArrayList<>();
+    long triggersSurviving =
+        resolved.stream().filter(pair -> pair.getFirst() instanceof EventTrigger).count();
+    for (var pair : resolved) {
+      if (pair.getFirst() instanceof Path.TranslationTarget) {
+        perWaypointSpeeds.add(
+            ((TranslationTargetConstraint) pair.getSecond()).maxVelocityMetersPerSec());
+      }
+    }
+
+    assertEquals(1, triggersSurviving, "event trigger must survive the waypoint expansion");
+    assertEquals(caps.length, perWaypointSpeeds.size(), "one translation target per waypoint");
+    for (int i = 0; i < caps.length; i++) {
+      assertEquals(
+          caps[i] != null ? caps[i] : 4.5, perWaypointSpeeds.get(i), 1e-9, "waypoint " + i);
     }
   }
 }

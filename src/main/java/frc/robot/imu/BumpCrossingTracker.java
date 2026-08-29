@@ -41,11 +41,19 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   private static final double ON_BUMP_TIMEOUT_SECONDS = 1.5;
 
   /**
-   * Speed commanded along the crossing direction while on the bump. This is the primary tuning
-   * knob: too slow and the robot stalls on the near face, too fast and it launches. 581 uses 4.0
-   * m/s; this starts conservative.
+   * Speed commanded along the crossing direction while on the bump, matching 581.
+   *
+   * <p>This must not be set below what the follower would have commanded anyway, or the override
+   * becomes a brake. BLine drives on remaining path distance, so mid-crossing it is asking for
+   * P * ~2m = 5 m/s, clamped to the 4.5 m/s path limit. Anything under that slows the crossing
+   * down instead of committing to it.
+   *
+   * <p>4.0 rather than the full 4.5 leaves vector headroom: the perpendicular cross-track term is
+   * added on top of this and nothing re-clamps the result before it reaches the modules, so
+   * commanding the limit along the crossing direction would squeeze out the correction keeping the
+   * robot centered on the bump.
    */
-  private static final double CROSSING_LINEAR_VELOCITY = 3.0;
+  private static final double CROSSING_LINEAR_VELOCITY = 4.0;
 
   /**
    * Signed tilt along the direction of travel, in degrees. Positive means tilted up toward the

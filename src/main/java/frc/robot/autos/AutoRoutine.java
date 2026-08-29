@@ -12,6 +12,7 @@ import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
 import frc.robot.lib.BLine.FollowPath;
 import frc.robot.lib.BLine.Path;
+import frc.robot.lib.BLine.Path.EventTrigger;
 import frc.robot.lib.BLine.Path.Waypoint;
 import frc.robot.lib.BLine.Path.PathConstraints;
 import frc.robot.lib.BLine.Path.RangedConstraint;
@@ -47,8 +48,9 @@ public class AutoRoutine {
   private final List<Command> steps = new ArrayList<>();
   private Pose2d startPose = null;
 
-  // Accumulated waypoints for the current BLine path segment.
-  private final List<Waypoint> pendingWaypoints = new ArrayList<>();
+  // Accumulated elements for the current BLine path segment, in order. Usually waypoints, but
+  // bumpCross() interleaves EventTriggers so it can arm mid-path without splitting the batch.
+  private final List<Path.PathElement> pendingElements = new ArrayList<>();
   // Poses backing pendingWaypoints, kept so the batch length can be measured for the timeout.
   private final List<Pose2d> pendingPoses = new ArrayList<>();
   // Per-waypoint max speed constraints (null = use default)
@@ -70,6 +72,9 @@ public class AutoRoutine {
   private static final double DRIVE_TIMEOUT_BASE_SECS = 3.0;
   private static final double DRIVE_TIMEOUT_ASSUMED_SPEED_MPS = 1.5;
   private static final double DRIVE_TIMEOUT_MAX_SECS = 15.0;
+
+  // BLine's event trigger registry is static, so keys must be unique across every routine built.
+  private static int nextBumpCrossId = 0;
 
 
   private AutoRoutine(SwerveSubsystem swerve, LocalizationSubsystem localization,
@@ -140,7 +145,7 @@ public class AutoRoutine {
   }
 
   private void addWaypoint(Pose2d pose, Double maxSpeed) {
-    pendingWaypoints.add(new Waypoint(pose));
+    pendingElements.add(new Waypoint(pose));
     pendingPoses.add(pose);
     pendingMaxSpeeds.add(maxSpeed);
   }
@@ -154,7 +159,7 @@ public class AutoRoutine {
 
   public AutoRoutine withTimeout(double seconds) {
     if (seconds <= 0) return this;
-    if (!steps.isEmpty() && pendingWaypoints.isEmpty()) {
+    if (!steps.isEmpty() && pendingPoses.isEmpty()) {
       int lastIndex = steps.size() - 1;
       Command last = steps.remove(lastIndex);
       steps.add(last.withTimeout(seconds));
@@ -203,7 +208,11 @@ public class AutoRoutine {
    * {@code crossingDirection}, the drive commits to a fixed speed across the bump instead of
    * tracking the path, because the pose estimate is not trustworthy mid-bump.
    *
-   * <p>This flushes the pending path, so the crossing runs as its own BLine segment.
+   * <p>This does NOT split the path. It inserts a BLine EventTrigger that fires when the robot
+   * enters the following segment, so the preceding waypoint stays an intermediate handoff. Adding
+   * this as an ordinary sequential step instead would make that waypoint a batch endpoint, forcing
+   * a full settle to the 3cm end tolerance and arriving at the bump from a standstill -- both slow
+   * and exactly the wrong way to take a bump.
    *
    * @param crossingDirection field-relative direction of travel across the bump, given in RED
    *     coordinates like every other pose here; it is mirrored for blue automatically
@@ -221,8 +230,6 @@ public class AutoRoutine {
    *     measure it, do not infer it from the path waypoints.
    */
   public AutoRoutine bumpCross(Rotation2d crossingDirection, Translation2d landingPoint) {
-    flushPendingPath();
-
     // mirrorPose reflects across field center X and maps heading to 180 - heading, so the crossing
     // direction has to go through the same transform rather than being used as authored.
     Rotation2d direction =
@@ -239,9 +246,23 @@ public class AutoRoutine {
                         .getTranslation()
                     : landingPoint);
 
-    steps.add(
-        Commands.runOnce(() -> bumpCrossingTracker.bumpCrossRequest(direction, landing))
-            .withName("ArmBumpCrossing"));
+    Runnable arm = () -> bumpCrossingTracker.bumpCrossRequest(direction, landing);
+
+    if (pendingPoses.isEmpty()) {
+      // Nothing to hang a trigger off of -- no preceding waypoint means no segment to fire on.
+      // Fall back to arming as a plain sequential step.
+      steps.add(Commands.runOnce(arm).withName("ArmBumpCrossing"));
+      return this;
+    }
+
+    // The registry is static and shared across every routine built this session, so the key has to
+    // be unique per crossing rather than per auto.
+    String key = "AutoRoutine/BumpCross/" + (nextBumpCrossId++);
+    FollowPath.registerEventTrigger(key, arm);
+
+    // t_ratio 0 fires as soon as the robot enters the segment that starts at the waypoint just
+    // added, which is the segment that crosses the bump.
+    pendingElements.add(new EventTrigger(0.0, key));
 
     return this;
   }
@@ -283,11 +304,11 @@ public class AutoRoutine {
    * If there are pending parallel commands, they run alongside the path.
    */
   private void flushPendingPath() {
-    if (pendingWaypoints.isEmpty()) {
+    if (pendingPoses.isEmpty()) {
       return;
     }
 
-    List<Path.PathElement> elements = new ArrayList<>(pendingWaypoints);
+    List<Path.PathElement> elements = new ArrayList<>(pendingElements);
     Path path;
 
     // Apply each waypoint's speed cap to that waypoint alone, using BLine's ranged constraints.
@@ -346,7 +367,7 @@ public class AutoRoutine {
       lastFlushedPose = pendingPoses.get(pendingPoses.size() - 1);
     }
 
-    pendingWaypoints.clear();
+    pendingElements.clear();
     pendingPoses.clear();
     pendingMaxSpeeds.clear();
   }
