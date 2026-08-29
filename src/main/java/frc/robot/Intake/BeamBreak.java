@@ -37,9 +37,17 @@ public class BeamBreak extends LifecycleSubsystem {
 
   private static final double UPDATE_HZ = 100.0;
 
-  /** A ball is present when the distance is under this, in meters. */
+  /**
+   * A ball is present when the distance is under this, in meters.
+   *
+   * <p>An empty hopper reads about 1.0 m, the sensor ranging past the balls to whatever is behind
+   * them; a ball intercepts the beam closer than that. So the threshold belongs just under the
+   * empty baseline -- anything nearer than "empty" is a ball. 0.75 sat 0.25 m below it, which is
+   * enough margin that a ball not fully seated read as an empty hopper and started the agitation
+   * with balls still stacked.
+   */
   private static final String BALL_THRESHOLD_KEY = "BeamBreak/Tune/BallThresholdMeters";
-  private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.75;
+  private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.85;
 
   /**
    * Falling-edge debounce on the ball reading. Balls bounce, so a settling stack opens brief gaps
