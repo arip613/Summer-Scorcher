@@ -68,8 +68,16 @@ public final class FieldPoints {
   public static final Pose2d SHOOTER_POSE = new Pose2d(0.0, 0.0, Rotation2d.kZero);
 
   // Pass target points (red values — blue derived via mirror)
+  //
+  // LEFT is the mirror of RIGHT across the field centerline, so the pair sits symmetrically either
+  // side of Y = FIELD_WIDTH / 2 (4.035). It was hardcoded to 3.5, which is essentially ON the
+  // centerline rather than opposite 7.0 -- so both "sides" were the same side, and a pass from the
+  // low-Y half aimed at the middle of the field instead of across it.
+  //
+  // Derived rather than written out, so the two cannot drift apart again.
   public static final Translation2d PASS_TARGET_RIGHT = new Translation2d(14.0, 7.0);
-  public static final Translation2d PASS_TARGET_LEFT  = new Translation2d(14.0, 3.5);
+  public static final Translation2d PASS_TARGET_LEFT  =
+      new Translation2d(14.0, FIELD_WIDTH - PASS_TARGET_RIGHT.getY());
   public static final Translation2d PASS_TARGET_RIGHT_BLUE = mirrorTranslation(PASS_TARGET_RIGHT);
   public static final Translation2d PASS_TARGET_LEFT_BLUE  = mirrorTranslation(PASS_TARGET_LEFT);
 

@@ -593,7 +593,7 @@ public class Robot extends TimedRobot {
     Pose2d robotPose = localization.getPose();
     // Reevaluate while held so driving to the other side updates the selected pass target without
     // requiring the driver to release and press the trigger again.
-    activePassTarget = RightTriggerMath.closestPassTarget(
+    activePassTarget = RightTriggerMath.farthestPassTarget(
         robotPose.getTranslation(),
         FieldPoints.getAlliancePassTargetRight(),
         FieldPoints.getAlliancePassTargetLeft());
@@ -681,7 +681,7 @@ public class Robot extends TimedRobot {
       SmartDashboard.putBoolean("Driver/ShootingActive", false);
       turretLookup.disable();
       headingLock.disableLock();
-      activePassTarget = RightTriggerMath.closestPassTarget(
+      activePassTarget = RightTriggerMath.farthestPassTarget(
           localization.getPose().getTranslation(),
           FieldPoints.getAlliancePassTargetRight(),
           FieldPoints.getAlliancePassTargetLeft());

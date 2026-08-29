@@ -13,18 +13,37 @@ import org.wpilib.math.geometry.Translation2d;
 class RightTriggerMathTest {
   private static final double EPSILON = 1e-9;
 
+  /**
+   * A pass throws the ball across the field, so the target is the one further away. Picking the
+   * nearer one aimed at the side the robot was already standing on.
+   */
   @Test
-  void choosesNearestPassTarget() {
-    Translation2d lowTarget = new Translation2d(14.0, 3.5);
+  void choosesFarthestPassTarget() {
+    Translation2d lowTarget = new Translation2d(14.0, FieldPoints.FIELD_WIDTH - 7.0);
     Translation2d highTarget = new Translation2d(14.0, 7.0);
-    assertEquals(
-        lowTarget,
-        RightTriggerMath.closestPassTarget(
-            new Translation2d(10.0, 2.0), highTarget, lowTarget));
+
     assertEquals(
         highTarget,
-        RightTriggerMath.closestPassTarget(
-            new Translation2d(10.0, 7.5), highTarget, lowTarget));
+        RightTriggerMath.farthestPassTarget(
+            new Translation2d(10.0, 2.0), highTarget, lowTarget),
+        "robot on the low-Y side should pass to the high-Y target");
+    assertEquals(
+        lowTarget,
+        RightTriggerMath.farthestPassTarget(
+            new Translation2d(10.0, 7.5), highTarget, lowTarget),
+        "robot on the high-Y side should pass to the low-Y target");
+  }
+
+  /** The pair has to straddle the centerline, or "across the field" means nothing. */
+  @Test
+  void passTargetsAreSymmetricAboutTheFieldCenterline() {
+    double center = FieldPoints.FIELD_WIDTH / 2.0;
+    double right = FieldPoints.PASS_TARGET_RIGHT.getY();
+    double left = FieldPoints.PASS_TARGET_LEFT.getY();
+
+    assertTrue(right > center, "right target should be above the centerline, was " + right);
+    assertTrue(left < center, "left target should be below the centerline, was " + left);
+    assertEquals(right - center, center - left, EPSILON, "targets should be equidistant");
   }
 
   @Test
