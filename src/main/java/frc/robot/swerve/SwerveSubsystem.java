@@ -7,6 +7,7 @@ import com.ctre.phoenix6.swerve.SwerveModule.DriveRequestType;
 import com.ctre.phoenix6.swerve.SwerveRequest;
 import com.ctre.phoenix6.swerve.utility.PhoenixPIDController;
 import frc.robot.fms.FmsSubsystem;
+import org.wpilib.math.util.MathUtil;
 import org.wpilib.smartdashboard.SmartDashboard;
 import org.wpilib.math.linalg.Matrix;
 import org.wpilib.math.linalg.VecBuilder;
@@ -142,9 +143,43 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
     return max;
   }
 
-  public void setSnapToAngle(double angle) {
-    goalSnapAngle = angle;
+  /**
+   * Maximum rate the snap target itself may move, in degrees per second.
+   *
+   * <p>Not a limit on how fast the robot turns -- that is the request's own max rotational rate.
+   * This bounds how fast the *goal* is allowed to move, which is a different thing: the aim heading
+   * is recomputed every loop from the pose estimate, so a pose jump moves the target instantly and
+   * the snap faithfully chases it.
+   *
+   * <p>In match AZGLE4_Q29 the estimate tore by 2-3m while aiming from ~1.5m out, which inverts the
+   * bearing -- Pass/DistanceM went 3.17m to 1.67m in a single 20ms frame -- and the robot whipped
+   * about 220 degrees in under a second. 540 deg/s lets a genuine aim change track a moving robot
+   * comfortably while making a single-frame pose jump a bounded nudge instead of a spin.
+   */
+  private static final double MAX_SNAP_TARGET_SLEW_DEG_PER_SEC = 540.0;
 
+  private double lastSnapUpdateTimestamp = -1.0;
+
+  public void setSnapToAngle(double angle) {
+    double now = Timer.getTimestamp();
+    double dt = lastSnapUpdateTimestamp < 0 ? 0.0 : now - lastSnapUpdateTimestamp;
+    lastSnapUpdateTimestamp = now;
+
+    if (dt <= 0.0 || dt > 0.25) {
+      // First call, or a gap long enough that the previous target is meaningless -- accept as-is
+      // rather than slewing across a stale value.
+      goalSnapAngle = angle;
+    } else {
+      // Shortest-path error, so wrapping through +/-180 costs nothing.
+      double error = MathUtil.inputModulus(angle - goalSnapAngle, -180.0, 180.0);
+      double maxStep = MAX_SNAP_TARGET_SLEW_DEG_PER_SEC * dt;
+      goalSnapAngle =
+          MathUtil.inputModulus(
+              goalSnapAngle + Math.clamp(error, -maxStep, maxStep), -180.0, 180.0);
+    }
+
+    SmartDashboard.putNumber("Swerve/SnapTargetRequested", angle);
+    SmartDashboard.putNumber("Swerve/SnapTargetUsed", goalSnapAngle);
 
     if (RobotState.isAutonomous()) {
       sendSwerveRequest();
