@@ -175,10 +175,18 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
    * pitch, and checking only one axis would miss it.
    */
   private double tiltFromLevelDegrees() {
-    double pitch = Math.toRadians(imu.getPitch());
-    double roll = Math.toRadians(imu.getRoll());
+    // Level-referenced, not raw. The Pigeon is mounted inverted and reads roll ~179 with the robot
+    // flat, so using the raw values made a level robot measure as 179 degrees tilted and rejected
+    // every vision measurement for a whole match.
+    double pitch = Math.toRadians(imu.getLevelPitch());
+    double roll = Math.toRadians(imu.getLevelRoll());
+    double tilt =
+        Math.toDegrees(Math.acos(Math.clamp(Math.cos(pitch) * Math.cos(roll), -1.0, 1.0)));
 
-    return Math.toDegrees(Math.acos(Math.clamp(Math.cos(pitch) * Math.cos(roll), -1.0, 1.0)));
+    // Fold about 90 degrees. If the mount offset is ever wrong again the raw angle lands near 180
+    // for a level robot; folding makes that cost accuracy near 90 degrees of tilt instead of
+    // silently disabling vision entirely. A robot past 90 degrees has bigger problems than pose.
+    return Math.min(tilt, 180.0 - tilt);
   }
 
   private void updateHeadingFromRightVision() {

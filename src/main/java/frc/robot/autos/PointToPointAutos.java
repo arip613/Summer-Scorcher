@@ -328,12 +328,12 @@ public class PointToPointAutos {
         .run(startIntaking()) // don't cut off intaking early if we get stuck on the first waypoint
         .driveToAll(sidePose("firstPickupOuter", 8.88, 7.321, 115, leftSide))
         .driveToAll(sidePose("firstPickupInner", 8.88, 4.471, 115, leftSide))
-        .driveToAll(sidePose("lineupToBump", 9.71, 5.67, 270, leftSide))
+        .driveToAll(sidePose("lineupToBump", 9.71, 5, 270, leftSide))
         // Crossing runs +X in red coords (9.71 -> 13.2). No landing point yet: a pose reset to a
         // guessed location is worse than none, so this is velocity override only until the real
         // landing spot is measured.
         .bumpCross(Rotation2d.kZero)
-        .driveToAll(sidePose("firstShootApproach", 13.2, 5.67, 270, leftSide))
+        .driveToAll(sidePose("firstShootApproach", 13.2, 5, 270, leftSide))
         .driveToAll(sidePose("firstShoot", 13.7, 5.2, 195, leftSide))
         .runFor(3, startShooting())
         .run(stopShooting())
@@ -342,7 +342,7 @@ public class PointToPointAutos {
         .driveToAll(sidePose("secondPickupOuter", 9.51, 6.36, 90, leftSide), 2.7)
         .driveToAll(sidePose("secondPickupInner", 9.38, 3.99, 90, leftSide), 2.7)
         .driveToAll(sidePose("secondPickupHubSlam", 10.58, 4.0, 269, leftSide), 2.7)
-        .driveToAll(sidePose("lineupToBump2", 9.71, 5.67, 270, leftSide))
+        .driveToAll(sidePose("lineupToBump2", 9.71, 5, 270, leftSide))
         .bumpCross(Rotation2d.kZero)
         .driveToAll(sidePose("secondShootApproach", 13.2, 5.67, 270, leftSide))
         .driveToAll(sidePose("secondShoot", 13.7, 5.2, 270, leftSide))

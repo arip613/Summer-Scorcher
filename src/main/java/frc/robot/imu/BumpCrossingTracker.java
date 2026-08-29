@@ -133,9 +133,12 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
 
   @Override
   protected void collectInputs() {
+    // Level-referenced: the Pigeon is mounted inverted, so raw roll reads ~180 with the robot
+    // flat. Feeding that in flips body-up and inverts the sign of the whole measurement, which
+    // would have reported a climb as a descent and never advanced the crossing.
     directionalTilt =
         calculateDirectionalTilt(
-            imu.getPitch(), imu.getRoll(), imu.getRobotHeading(), crossingDirection);
+            imu.getLevelPitch(), imu.getLevelRoll(), imu.getRobotHeading(), crossingDirection);
 
     boolean flatNow = Math.abs(directionalTilt) < FLAT_THRESHOLD_DEGREES;
     isFlat = flatDebouncer.calculate(flatNow);
