@@ -38,6 +38,20 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
    */
   private static final double MAX_VISION_TILT_DEGREES = 4.0;
 
+  /**
+   * How stale the last accepted vision measurement may be before the pose stops being trusted for
+   * open-loop moves. Odometry alone drifts slowly, so a second is generous for "vision agreed with
+   * me recently"; anything older means nothing has confirmed the estimate.
+   */
+  private static final double POSE_TRUST_MAX_VISION_AGE_S = 1.0;
+
+  /**
+   * How long after a hard pose reset the estimate stays untrusted. A reset means the estimate had
+   * already drifted at least HARD_RESET_MIN_TRANSLATION_ERROR_M, and the new one has not been
+   * corroborated yet.
+   */
+  private static final double POSE_TRUST_SETTLE_AFTER_RESET_S = 1.0;
+
 
   private final ImuSubsystem imu;
   private final VisionSubsystem vision;
@@ -46,6 +60,7 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
   private final DoubleArrayPublisher robotPosePub;
   private int visionAcceptedCount = 0;
   private int visionHardResetCount = 0;
+  private double lastHardResetTime = Double.NEGATIVE_INFINITY;
   private final VisionRecoveryGate visionRecoveryGate = new VisionRecoveryGate();
   private double lastAcceptedVisionRobotTime = Timer.getTimestamp();
   private double lastRecoveryCandidateRobotTime = -1.0;
@@ -145,6 +160,9 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
 
     SmartDashboard.putBoolean("Localization/VisionRecoveryPending", visionRecoveryPending);
     SmartDashboard.putNumber("Localization/TiltFromLevelDeg", tiltFromLevelDegrees());
+    SmartDashboard.putBoolean("Localization/PoseTrusted", isPoseTrusted());
+    SmartDashboard.putNumber(
+        "Localization/VisionAgeS", Timer.getTimestamp() - lastAcceptedVisionRobotTime);
 
     updateHeadingFromRightVision();
 
@@ -187,6 +205,26 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
     // for a level robot; folding makes that cost accuracy near 90 degrees of tilt instead of
     // silently disabling vision entirely. A robot past 90 degrees has bigger problems than pose.
     return Math.min(tilt, 180.0 - tilt);
+  }
+
+  /**
+   * Whether the pose estimate is currently good enough to act on open loop.
+   *
+   * <p>Closed-loop path following degrades gracefully with a bad pose -- it drives to the wrong
+   * place but keeps correcting. An open-loop move does not: it commits to a heading and a speed
+   * derived from the estimate at one instant and cannot notice it was wrong. So anything that
+   * gives up feedback needs to ask first.
+   *
+   * <p>In match AZGLE4_Q29 the robot hit a teammate on the approach to the bump, the estimate
+   * drifted far enough to trigger a hard reset at t=170.3, and the bump crossing was armed from
+   * 169.31. It only avoided driving on the discarded pose because the approach timed out first.
+   */
+  public boolean isPoseTrusted() {
+    double now = Timer.getTimestamp();
+
+    return !visionRecoveryPending
+        && (now - lastAcceptedVisionRobotTime) <= POSE_TRUST_MAX_VISION_AGE_S
+        && (now - lastHardResetTime) > POSE_TRUST_SETTLE_AFTER_RESET_S;
   }
 
   private void updateHeadingFromRightVision() {
@@ -287,6 +325,7 @@ public class LocalizationSubsystem extends StateMachine<LocalizationState> {
     if (disagreement >= HARD_RESET_MIN_TRANSLATION_ERROR_M) {
       resetPoseXYOnly(new Pose2d(
           evaluation.averagedTranslation(), getPose().getRotation()));
+      lastHardResetTime = Timer.getTimestamp();
       SmartDashboard.putNumber("Localization/VisionHardResets", ++visionHardResetCount);
       SmartDashboard.putString("Localization/VisionRecoveryStatus", "XY reset applied");
     } else {

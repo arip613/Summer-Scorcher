@@ -3,6 +3,7 @@ package frc.robot.imu;
 import frc.robot.util.scheduling.SubsystemPriority;
 import frc.robot.util.state_machines.StateMachine;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import org.wpilib.math.filter.Debouncer;
 import org.wpilib.math.filter.Debouncer.DebounceType;
@@ -97,6 +98,7 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
 
   private final ImuSubsystem imu;
   private final Consumer<Translation2d> poseResetConsumer;
+  private final BooleanSupplier poseTrusted;
 
   private final Debouncer flatDebouncer = new Debouncer(FLAT_DEBOUNCE_SECONDS, DebounceType.kRising);
   private final Debouncer flatFallbackDebouncer =
@@ -110,10 +112,12 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   private boolean isFlatFallbackDebounced = false;
   private int completedCrossings = 0;
 
-  public BumpCrossingTracker(ImuSubsystem imu, Consumer<Translation2d> poseResetConsumer) {
+  public BumpCrossingTracker(
+      ImuSubsystem imu, Consumer<Translation2d> poseResetConsumer, BooleanSupplier poseTrusted) {
     super(SubsystemPriority.BUMP_CROSSING, BumpCrossingState.FLAT_NOT_CROSSING);
     this.imu = imu;
     this.poseResetConsumer = poseResetConsumer;
+    this.poseTrusted = poseTrusted;
   }
 
   /**
@@ -135,6 +139,18 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
    */
   public void bumpCrossRequest(
       Rotation2d crossingDirection, Optional<Translation2d> landingPoint) {
+    // Refuse to arm on a pose we do not believe. The override drives open loop along a
+    // field-relative heading taken from the estimate, so a wrong estimate means driving 4 m/s in
+    // the wrong direction with no feedback to notice. In match AZGLE4_Q29 the robot hit a teammate
+    // on this approach and the estimate was hard-reset while a crossing was armed; it escaped only
+    // because the approach happened to time out first.
+    if (!poseTrusted.getAsBoolean()) {
+      SmartDashboard.putBoolean("BumpCrossing/RefusedUntrustedPose", true);
+      setStateFromRequest(BumpCrossingState.FLAT_NOT_CROSSING);
+      return;
+    }
+    SmartDashboard.putBoolean("BumpCrossing/RefusedUntrustedPose", false);
+
     this.crossingDirection = crossingDirection;
     this.landingPoint = landingPoint;
     crossingArmedTimestamp = Timer.getTimestamp();
@@ -162,6 +178,12 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
 
   @Override
   protected BumpCrossingState getNextState(BumpCrossingState currentState) {
+    // The pose can go bad mid-crossing too -- a collision, or vision correcting a drift. Bail out
+    // rather than keep steering an open-loop move by an estimate that just changed under us.
+    if (currentState.isCrossing() && !poseTrusted.getAsBoolean()) {
+      return finishCrossing("pose no longer trusted", false);
+    }
+
     // Fallback: we thought we were climbing but have been flat for a while, so the crossing either
     // already finished or never happened. Finish rather than stay stuck overriding the drive.
     if (currentState == BumpCrossingState.CROSSING_UPHILL && isFlatFallbackDebounced) {

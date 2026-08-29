@@ -164,7 +164,8 @@ public class Robot extends TimedRobot {
   // A field initializer, not a constructor-body assignment: LifecycleSubsystemManager.ready() runs
   // partway through the constructor, and anything built after it never gets a periodic.
   private final BumpCrossingTracker bumpCrossingTracker =
-      new BumpCrossingTracker(imu, localization::resetTranslationOnly);
+      new BumpCrossingTracker(
+          imu, localization::resetTranslationOnly, localization::isPoseTrusted);
   private final HeadingLock headingLock = new HeadingLock(localization, swerve);
   private final DistanceCalc distanceCalc = new DistanceCalc(localization, headingLock);
   private final Drum drum = new Drum(
