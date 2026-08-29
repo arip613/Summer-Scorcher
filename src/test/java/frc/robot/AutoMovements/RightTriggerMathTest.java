@@ -14,27 +14,32 @@ class RightTriggerMathTest {
   private static final double EPSILON = 1e-9;
 
   /**
-   * A pass throws the ball across the field, so the target is the one further away. Picking the
-   * nearer one aimed at the side the robot was already standing on.
+   * The pass goes down the side the robot is already on, so the nearer target wins. The two
+   * targets have to actually be on opposite halves for that to mean anything -- see the symmetry
+   * test below.
    */
   @Test
-  void choosesFarthestPassTarget() {
+  void choosesNearestPassTarget() {
     Translation2d lowTarget = new Translation2d(14.0, FieldPoints.FIELD_WIDTH - 7.0);
     Translation2d highTarget = new Translation2d(14.0, 7.0);
 
     assertEquals(
-        highTarget,
-        RightTriggerMath.farthestPassTarget(
-            new Translation2d(10.0, 2.0), highTarget, lowTarget),
-        "robot on the low-Y side should pass to the high-Y target");
-    assertEquals(
         lowTarget,
-        RightTriggerMath.farthestPassTarget(
+        RightTriggerMath.closestPassTarget(
+            new Translation2d(10.0, 2.0), highTarget, lowTarget),
+        "robot on the low-Y side should pass to the low-Y target");
+    assertEquals(
+        highTarget,
+        RightTriggerMath.closestPassTarget(
             new Translation2d(10.0, 7.5), highTarget, lowTarget),
-        "robot on the high-Y side should pass to the low-Y target");
+        "robot on the high-Y side should pass to the high-Y target");
   }
 
-  /** The pair has to straddle the centerline, or "across the field" means nothing. */
+  /**
+   * The pair has to straddle the centerline. This is the assertion that would have caught the real
+   * bug: PASS_TARGET_LEFT was 3.5 against a centerline of 4.035, so both targets sat on the same
+   * half and "nearest" could never distinguish a side.
+   */
   @Test
   void passTargetsAreSymmetricAboutTheFieldCenterline() {
     double center = FieldPoints.FIELD_WIDTH / 2.0;
