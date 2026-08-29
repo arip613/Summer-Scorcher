@@ -35,7 +35,8 @@ public class LookupTable extends StateMachine<LookupTable.State> {
             Map.entry(9.0, 6000.0));
 
     public static double getPassRpm(double distanceMeters) {
-        return PASS_RPM_TABLE.get(distanceMeters);
+        // Same ceiling as the scoring path -- this table reaches 6000 at its far end.
+        return Math.min(MAX_SAFE_RPM, PASS_RPM_TABLE.get(distanceMeters));
     }
 
     public static class ShotPoint {
@@ -89,6 +90,26 @@ public class LookupTable extends StateMachine<LookupTable.State> {
     private double lastActiveHoodDeg = 0.0;
     private final List<String> recordedPoints = new ArrayList<>();
 
+    /**
+     * Hard ceiling on any commanded flywheel RPM, from 581's shooter. A bad table entry, a wild
+     * distance from a momentary pose glitch, or an extrapolated point can otherwise command an
+     * arbitrarily high speed. The pass table already reaches 6000, so this is not hypothetical.
+     */
+    private static final double MAX_SAFE_RPM = 3200.0;
+
+    /**
+     * Added to the commanded RPM so the average speed a ball actually leaves at lands on the table
+     * value, borrowed from 6328's pidSetpointOffset. Every shot dips the wheel below setpoint, so
+     * without a bias the mean release speed sits under target -- measured at -76 RPM over a volley
+     * on this robot.
+     *
+     * <p>Defaults to 0 because the current shot table was tuned with the droop present: correcting
+     * it without re-checking the table would make every shot go long. Raise this and re-verify one
+     * known distance, or leave it at 0 and keep the table as-is.
+     */
+    private static final String RPM_OFFSET_KEY = "Shooter/Tune/RpmSetpointOffset";
+    private static final double DEFAULT_RPM_SETPOINT_OFFSET = 0.0;
+
     private static final double PHASE_DELAY_SECS = 0.03;
     private static final double MIN_DISTANCE = 1.0;
     private static final double MAX_DISTANCE = 6.0;
@@ -123,12 +144,24 @@ public class LookupTable extends StateMachine<LookupTable.State> {
         this.drum     = drum;
         this.hood         = hood;
 // do your job he
-    //                      distance, tA,  RPM,  hood
-     addShotPoint(new ShotPoint(1.32, 0.5, 2200, -15));
-    addShotPoint(new ShotPoint(2.1,  0.39, 2250, -20));
-     addShotPoint(new ShotPoint(2.5,  0.23, 2350, -23));
-     addShotPoint(new ShotPoint(2.92936, 0.14, 2400, -33));
-     addShotPoint(new ShotPoint(4,   0.08, 2750 + 80, -36));
+    // tA is 0 because nothing reads it any more -- the shot solution comes from the pose-based
+    // distance. addShotPoint sorts by distance, so declaration order does not matter.
+    //
+    // The two measured segments have very different slopes (732 RPM/m near, 77 RPM/m far; -16.6
+    // deg/m near, -6.9 deg/m far), so the curve has a real knee around 2.3 m. Do not fit a
+    // polynomial through these: a quadratic peaks at 3.08 m and then commands LESS rpm with more
+    // distance. Interior points are also pointless -- lookupShot already interpolates linearly, so
+    // a point on the line between two others changes nothing. Only the ends are worth extending.
+    //
+    //                       distance, tA,  RPM,   hood
+    // --- measured 2026-08-28 ---
+    addShotPoint(new ShotPoint(1.92, 0.0, 2500, -17.2));
+    addShotPoint(new ShotPoint(2.33, 0.0, 2800, -24.0));
+    addShotPoint(new ShotPoint(3.63, 0.0, 2900, -33.0));
+    // --- extrapolated, NOT measured: linear continuation of the adjacent segment, so the table
+    // stops clamping outside 1.92..3.63 m. Verify before trusting either one.
+    addShotPoint(new ShotPoint(1.50, 0.0, 2190, -10.2));
+    addShotPoint(new ShotPoint(4.20, 0.0, 2945, -36.9));
 
 
         //addTofPoint(4, 0.4);
@@ -139,6 +172,7 @@ public class LookupTable extends StateMachine<LookupTable.State> {
         SmartDashboard.setDefaultBoolean(TUNE_MANUAL_KEY, false);
         SmartDashboard.setDefaultNumber(TUNE_RPM_KEY, DEFAULT_TUNE_RPM);
         SmartDashboard.setDefaultNumber(TUNE_HOOD_KEY, DEFAULT_TUNE_HOOD_DEG);
+        SmartDashboard.setDefaultNumber(RPM_OFFSET_KEY, DEFAULT_RPM_SETPOINT_OFFSET);
 
         // All three persist so a redeploy mid-tuning-session does not lose them. Leaving the
         // override latched into a real match would silently ignore the shot table, so instead of
@@ -217,17 +251,13 @@ public class LookupTable extends StateMachine<LookupTable.State> {
 
         ChassisVelocities launcherVel = computeLauncherVelocity(robotVel, estimatedPose.getRotation());
 
+        // Shoot-on-the-move lead compensation removed. It had never done anything: tofPoints is
+        // empty, so lookupTof returned 0 and the 20-iteration solve produced a zero offset every
+        // loop. The shot gate already refuses to fire above 0.5 m/s, so aiming at where the robot
+        // actually is, is the honest answer.
         Translation2d lookaheadLauncherPos = launcherPos;
         double lookaheadDistance = rawDistance;
         double timeOfFlight = lookupTof(rawDistance);
-
-        for (int i = 0; i < 20; i++) {
-            timeOfFlight = lookupTof(lookaheadDistance);
-            double dx = launcherVel.vx * timeOfFlight;
-            double dy = launcherVel.vy * timeOfFlight;
-            lookaheadLauncherPos = launcherPos.plus(new Translation2d(dx, dy));
-            lookaheadDistance    = target.getDistance(lookaheadLauncherPos);
-        }
 
         Pose2d lookaheadRobotPose = new Pose2d(
                 lookaheadLauncherPos.minus(
@@ -236,7 +266,12 @@ public class LookupTable extends StateMachine<LookupTable.State> {
         Rotation2d driveAngle = getDriveAngleWithLauncherOffset(lookaheadRobotPose, target);
 
         double[] shotParams   = lookupShot(lookaheadDistance);
-        double   flywheelRpm  = shotParams[0];
+        // Bias up so the mean release speed lands on the table value, then clamp so no lookup or
+        // extrapolation can ever command an unsafe speed.
+        double   flywheelRpm  = Math.min(
+                MAX_SAFE_RPM,
+                shotParams[0]
+                    + SmartDashboard.getNumber(RPM_OFFSET_KEY, DEFAULT_RPM_SETPOINT_OFFSET));
         double   hoodAngleRad = Math.toRadians(shotParams[1]);
 
         if (lastDriveAngle == null)         lastDriveAngle   = driveAngle;

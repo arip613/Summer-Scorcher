@@ -40,8 +40,19 @@ public class Hardware {
   public final TalonFX intakeRollerMotorA = new TalonFX(31, RIO);   
   public final TalonFX intakeRollerMotorB     = new TalonFX(32, RIO);
 
-  /** CANrange on can_s1, ID 63, used as a beam break. */
-  public final CANrange beamBreakSensor = new CANrange(63, SENSOR_BUS);
+  /** CANrange on can_s1, ID 0, used as a beam break. */
+  public final CANrange beamBreakSensor = new CANrange(0, SENSOR_BUS);
+
+  /**
+   * Never commanded, never read -- constructed only to register a TalonFX on can_s1.
+   *
+   * <p>Phoenix brings a bus up lazily, and the diagnostic server has historically only enumerated
+   * buses that have a motor controller on them. If the CANrange alone is not enough to start
+   * can_s1, this forces the bus to initialize so Tuner can see what is actually on it. ID 62 is
+   * outside every range in use, so it will not collide with a real device.
+   */
+  @SuppressWarnings("unused")
+  private final TalonFX ghostSensorBusDevice = new TalonFX(62, SENSOR_BUS);
 
   public final Limelight leftLimelight  = new Limelight("left",  LimelightState.TAGS, LimelightModel.FOUR);
   public final Limelight rightLimelight = new Limelight("right", LimelightState.TAGS, LimelightModel.FOUR);

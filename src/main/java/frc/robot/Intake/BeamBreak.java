@@ -37,6 +37,13 @@ public class BeamBreak extends LifecycleSubsystem {
 
   private static final double UPDATE_HZ = 100.0;
 
+  /**
+   * A ball is present when the raw distance is under this, in meters. Compared directly against
+   * the latest reading -- no filtering, no debounce.
+   */
+  private static final String BALL_THRESHOLD_KEY = "BeamBreak/Tune/BallThresholdMeters";
+  private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.60;
+
   private final CANrange sensor;
   private final StatusSignal<Boolean> detectedSignal;
   private final StatusSignal<org.wpilib.units.measure.Distance> distanceSignal;
@@ -50,6 +57,7 @@ public class BeamBreak extends LifecycleSubsystem {
   private boolean detectedRaw = false;
   private double distanceMeters = 0.0;
   private double signalStrength = 0.0;
+  private boolean hasBall = false;
 
   public BeamBreak(CANrange sensor) {
     super(SubsystemPriority.IMU);
@@ -76,12 +84,20 @@ public class BeamBreak extends LifecycleSubsystem {
     } catch (Exception ex) {
       System.out.println("[BeamBreak] CANrange setup failed, sensor will read as absent: " + ex);
     }
+
+    SmartDashboard.putNumber(BALL_THRESHOLD_KEY, DEFAULT_BALL_THRESHOLD_METERS);
+  }
+
+  /** True while the raw distance reading is under the ball threshold. Unfiltered. */
+  public boolean hasBall() {
+    return hasBall;
   }
 
   /** True while an object is within the threshold. Debounced. */
   public boolean isDetected() {
     return detected;
   }
+
 
   /** Measured distance in meters. 0 when the reading is invalid. */
   public double getDistanceMeters() {
@@ -107,6 +123,12 @@ public class BeamBreak extends LifecycleSubsystem {
     signalStrength = readDouble(signalStrengthSignal);
     detected = detectedDebouncer.calculate(detectedRaw);
 
+    // Raw comparison against the latest reading. A dead sensor reads 0.0 m, which would otherwise
+    // look like a ball pressed right against it, so require a live reading above zero.
+    double threshold = SmartDashboard.getNumber(BALL_THRESHOLD_KEY, DEFAULT_BALL_THRESHOLD_METERS);
+    hasBall = ok && distanceMeters > 0.0 && distanceMeters < threshold;
+
+    SmartDashboard.putBoolean("BeamBreak/HasBall", hasBall);
     SmartDashboard.putBoolean("BeamBreak/Detected", detected);
     SmartDashboard.putBoolean("BeamBreak/DetectedRaw", detectedRaw);
     SmartDashboard.putNumber("BeamBreak/DistanceMeters", distanceMeters);

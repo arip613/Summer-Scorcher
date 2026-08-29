@@ -14,8 +14,10 @@ import frc.robot.FlywheelSubsystem.DrumStateMachine;
 import frc.robot.FlywheelSubsystem.HoodStateMachine;
 import frc.robot.IndexerSubsystem.Indexer;
 import frc.robot.IndexerSubsystem.Hopper;
+import frc.robot.Intake.BeamBreak;
 import frc.robot.Intake.IntakePosition;
 import frc.robot.Intake.intaker;
+import org.wpilib.math.filter.Debouncer;
 import frc.robot.localization.LocalizationSubsystem;
 import frc.robot.swerve.SwerveSubsystem;
 import frc.robot.lib.BLine.FollowPath;
@@ -59,6 +61,7 @@ public class PointToPointAutos {
   private final Hopper hopper;
   private final intaker intakeRoller;
   private final IntakePosition intakePosition;
+  private final BeamBreak beamBreak;
 
   private final SendableChooser<Command> chooser = new SendableChooser<>();
 
@@ -74,7 +77,9 @@ public class PointToPointAutos {
       Indexer indexer,
       Hopper hopper,
       intaker intakeRoller,
-      IntakePosition intakePosition) {
+      IntakePosition intakePosition,
+      BeamBreak beamBreak) {
+    this.beamBreak = beamBreak;
     this.swerve = swerve;
     this.localization = localization;
     this.pathBuilder = pathBuilder;
@@ -122,6 +127,9 @@ public class PointToPointAutos {
   private static final double SHOOT_SPEED_THRESHOLD = 0.5;
   private static final int SHOOT_READY_FRAME_THRESHOLD = 2;
   private int autoShootReadyFrames = 0;
+  /** Same falling debounce teleop uses, so one bad frame does not stop the feed mid-shot. */
+  private final Debouncer autoShootReadyDebouncer =
+      new Debouncer(0.08, Debouncer.DebounceType.kFalling);
 
   /** Offset applied after a right-side pose has been mirrored onto the red-left side. */
   private record PoseTweak(double xMeters, double yMeters, double headingDegrees) {
@@ -166,17 +174,21 @@ public class PointToPointAutos {
         })
         .andThen(Commands.run(() -> {
           var params = turretLookup.getParameters();
-          drumSM.requestRpm(params.flywheelRpm());
-          hoodSM.requestDegrees(Math.toDegrees(params.hoodAngleRad()));
+          // Take the commanded values from the subsystem rather than re-deriving them here.
+          // LookupTable already commands the drum and hood every loop, and re-deriving ignores the
+          // manual tuning override -- the two then fight each other at 50 Hz.
+          drumSM.requestRpm(turretLookup.getActiveRpm());
+          hoodSM.requestDegrees(turretLookup.getActiveHoodDeg());
 
           var speeds = swerve.getRobotRelativeSpeeds();
           double robotSpeed = Math.hypot(speeds.vx, speeds.vy);
-          boolean allReady = params.isValid()
+          // Heading deliberately excluded, matching teleop: the heading lock keeps aiming, but a
+          // snap that settles a couple of degrees short must not stall the shot forever.
+          boolean allReadyRaw = params.isValid()
               && robotSpeed < SHOOT_SPEED_THRESHOLD
-              && drum.isAtGoal()
-              && headingLock.isSettled();
+              && drum.isAtGoal();
 
-          if (allReady) {
+          if (autoShootReadyDebouncer.calculate(allReadyRaw)) {
             autoShootReadyFrames++;
           } else {
             autoShootReadyFrames = 0;
@@ -185,9 +197,18 @@ public class PointToPointAutos {
           if (autoShootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD) {
             indexer.feed();
             hopper.feed();
+            // Feeding: sweep the arm end to end to keep balls moving toward the indexer.
+            intakePosition.swing();
           } else {
             indexer.stop();
             hopper.stop();
+            // Waiting on the shot gate with nothing at the sensor -- run the staged agitation
+            // (20% of travel, then 50%, then all the way down) to work a ball into position.
+            if (!beamBreak.hasBall()) {
+              intakePosition.pulse();
+            } else {
+              intakePosition.deploy();
+            }
           }
         }))
         .withName("AutoShoot");
@@ -255,8 +276,8 @@ public class PointToPointAutos {
         .run(startIntaking()) // don't cut off intaking early if we get stuck on the first waypoint
         .driveToAll(sidePose("firstPickupOuter", 8.88, 7.321, 115, leftSide))
         .driveToAll(sidePose("firstPickupInner", 8.88, 4.471, 115, leftSide))
-        .driveToAll(sidePose("lineupToBump", 9.71, 5.67, 270, leftSide), 2.6)
-        .driveToAll(sidePose("firstShootApproach", 13.2, 5.67, 270, leftSide), 2.6)
+        .driveToAll(sidePose("lineupToBump", 9.71, 5.67, 270, leftSide))
+        .driveToAll(sidePose("firstShootApproach", 13.2, 5.67, 270, leftSide))
         .driveToAll(sidePose("firstShoot", 13.7, 5.2, 195, leftSide))
         .runFor(3, startShooting())
         .run(stopShooting())

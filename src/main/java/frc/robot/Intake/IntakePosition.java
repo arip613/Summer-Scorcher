@@ -6,10 +6,13 @@ import com.ctre.phoenix6.configs.MotorOutputConfigs;
 import com.ctre.phoenix6.configs.Slot0Configs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.CoastOut;
+import com.ctre.phoenix6.controls.DynamicMotionMagicTorqueCurrentFOC;
 import com.ctre.phoenix6.controls.MotionMagicTorqueCurrentFOC;
+import com.ctre.phoenix6.controls.PositionTorqueCurrentFOC;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.NeutralModeValue;
 
+import org.wpilib.command2.Commands;
 import org.wpilib.smartdashboard.SmartDashboard;
 import org.wpilib.system.Timer;
 import frc.robot.util.scheduling.SubsystemPriority;
@@ -21,7 +24,12 @@ public class IntakePosition extends StateMachine<IntakePosition.State> {
 			DEPLOY,
 			RETRACT,
 			SHOOTER,
-			PULSE
+			/** Staged agitation: 20% of travel, then 50%, then all the way down. */
+			PULSE,
+			/** Sweeps the full travel end to end, for use while a shot is being taken. */
+			SWING,
+			/** Retract with no motion profile -- pulls the arm in as hard as the limits allow. */
+			STOW
 	}
 
 	// Lower number = arm sits higher. Also used as the "down" end of the PULSE cycle.
@@ -42,15 +50,65 @@ public class IntakePosition extends StateMachine<IntakePosition.State> {
 	 */
 	private static final double RETRACT_ROTATIONS = -1.26;
 
+	/**
+	 * PULSE agitation stages: how far to raise the arm from the deployed end, as a fraction of the
+	 * full travel, with how long to hold each before moving on. 0.0 is fully deployed, 1.0 is fully
+	 * retracted. The sequence tilts up a fifth, then half, drops back down, then sweeps all the way
+	 * to retracted and holds there.
+	 */
+	private static final double[] SWING_STAGE_FRACTIONS = {0.20, 0.50, 0.00, 1.00};
+
+	/**
+	 * Advance a stage once the arm is within this many rotations of the stage target, rather than
+	 * after a fixed time. The stages cover very different distances -- 2.2 rotations for the first,
+	 * 11 for the last -- so a single duration either cut the long moves short or wasted time on the
+	 * short ones.
+	 */
+	private static final double STAGE_TOLERANCE_ROTATIONS = 0.40;
+
+	/**
+	 * Give up on a stage after this long and move on anyway, so a jammed or stalled arm cannot
+	 * freeze the sequence partway through.
+	 */
+	private static final double STAGE_TIMEOUT_SECONDS = 1.0;
+
+	/** SWING sweeps the whole travel end to end; this is how long one leg takes. */
+	private static final double FULL_SWING_LEG_SECONDS = 0.35;
+
 	private final TalonFX motor;
 	private final MotionMagicTorqueCurrentFOC mmRequest = new MotionMagicTorqueCurrentFOC(0).withSlot(0);
+
+	/**
+	 * Straight position control with no motion profile, used only for the very first deploy so the
+	 * arm gets down as fast as the gains and the current limit allow. Everything after that goes
+	 * back through Motion Magic's velocity/acceleration limits.
+	 */
+	private final PositionTorqueCurrentFOC fastRequest = new PositionTorqueCurrentFOC(0).withSlot(0);
+	private boolean hasDeployedOnce = false;
+
+	/**
+	 * Agitation moves at twice the configured Motion Magic rate. Dynamic Motion Magic carries the
+	 * velocity and acceleration on the request itself, so this does not disturb the config that
+	 * every other motion uses -- no runtime reconfiguration, no need to set it back.
+	 */
+	private static final double AGITATE_SPEED_MULTIPLIER = 2.0;
+	private static final double BASE_CRUISE_VELOCITY = 20.0;
+	private static final double BASE_ACCELERATION = 30.0;
+	private final DynamicMotionMagicTorqueCurrentFOC agitateRequest =
+			new DynamicMotionMagicTorqueCurrentFOC(
+					0,
+					BASE_CRUISE_VELOCITY * AGITATE_SPEED_MULTIPLIER,
+					BASE_ACCELERATION * AGITATE_SPEED_MULTIPLIER)
+				.withSlot(0);
 
 	private double deployRotations = DEFAULT_DEPLOY_ROTATIONS;
 	private double lastCommandedRotations = Double.NaN;
 
-	// Pulse state helpers
+	// Pulse/swing state helpers
 	private double lastPulseToggleTime = -1.0;
 	private boolean pulseDeployed = false;
+	private int swingStage = 0;
+	private double swingStageStart = -1.0;
 
 	public IntakePosition(TalonFX motor) {
 		super(SubsystemPriority.DEPLOY, State.OFF);
@@ -83,12 +141,40 @@ cfg.MotorOutput = new MotorOutputConfigs()
 		// constant were deployed and then ignored. Live edits still apply for the rest of a session.
 		SmartDashboard.putNumber(DEPLOY_KEY, DEFAULT_DEPLOY_ROTATIONS);
 		deployRotations = DEFAULT_DEPLOY_ROTATIONS;
+
+		// Dashboard buttons to exercise the arm without holding a controller trigger. These drive
+		// the same states the shot path uses, so what you see here is what happens in a match.
+		SmartDashboard.putData("Intake/Test/RunAgitation",
+				Commands.runOnce(this::pulse).ignoringDisable(false).withName("Intake/Agitate"));
+		SmartDashboard.putData("Intake/Test/RunSwing",
+				Commands.runOnce(this::swing).ignoringDisable(false).withName("Intake/Swing"));
+		SmartDashboard.putData("Intake/Test/Deploy",
+				Commands.runOnce(this::deploy).ignoringDisable(false).withName("Intake/Deploy"));
+		SmartDashboard.putData("Intake/Test/Retract",
+				Commands.runOnce(this::retract).ignoringDisable(false).withName("Intake/Retract"));
+		SmartDashboard.putData("Intake/Test/Stop",
+				Commands.runOnce(this::stopPulse).ignoringDisable(true).withName("Intake/Stop"));
 }
 
 	/** Commands a position and records it, so telemetry can show target vs actual. */
 	private void goTo(double rotations) {
 		lastCommandedRotations = rotations;
 		motor.setControl(mmRequest.withPosition(rotations));
+	}
+
+	/**
+	 * Commands a position with no motion profile at all -- no cruise velocity, no acceleration
+	 * limit. The arm moves as hard as kP and the 80 A stator limit allow.
+	 */
+	private void goToFast(double rotations) {
+		lastCommandedRotations = rotations;
+		motor.setControl(fastRequest.withPosition(rotations));
+	}
+
+	/** Commands a position at the agitation rate: same profile shape, twice the speed. */
+	private void goToAgitate(double rotations) {
+		lastCommandedRotations = rotations;
+		motor.setControl(agitateRequest.withPosition(rotations));
 	}
 
 	private double currentRotations() {
@@ -104,8 +190,22 @@ cfg.MotorOutput = new MotorOutputConfigs()
 	/** Retract elevator back to boot/zero position. */
 	public void retract() { setStateFromRequest(State.RETRACT); }
 
-	/** Start pulsing: deploy/retract repeatedly every 1s. */
+	/** Staged agitation: 20% of travel, then 50%, then all the way down. */
 	public void pulse() { setStateFromRequest(State.PULSE); }
+
+	/** Sweep the full travel end to end, for use while shooting. */
+	public void swing() { setStateFromRequest(State.SWING); }
+
+	/** Pull the arm all the way in with no motion profile -- as hard and fast as the limits allow. */
+	public void forceStow() { setStateFromRequest(State.STOW); }
+
+	/**
+	 * Position raised from the deployed end by a fraction of the full travel. 0 = still fully
+	 * deployed, 1 = fully retracted. So 0.20 tilts the arm up by a fifth of its range.
+	 */
+	private double raisedByFraction(double fraction) {
+		return deployRotations - fraction * (deployRotations - RETRACT_ROTATIONS);
+	}
 
 	public void shooter() { setStateFromRequest(State.SHOOTER); }
 
@@ -129,19 +229,27 @@ cfg.MotorOutput = new MotorOutputConfigs()
 			}
 
 			if (getState() == State.PULSE) {
+				// Staged, not a timer toggle: hold 20% of travel, then 50%, then drop all the way
+				// down and stay. Advancing only on elapsed time keeps each stage a fixed duration
+				// regardless of how fast the arm actually gets there.
 				double now = Timer.getTimestamp();
-				if (lastPulseToggleTime < 0) {
-					goTo(deployRotations);
-					pulseDeployed = true;
-					lastPulseToggleTime = now;
-				} else if (now - lastPulseToggleTime >= 0.3) {
-					if (pulseDeployed) {
-						goTo(-0.85);
-						pulseDeployed = false;
-					} else {
-						goTo(deployRotations);
-						pulseDeployed = true;
+				if (swingStage < SWING_STAGE_FRACTIONS.length - 1) {
+					double stageTarget = raisedByFraction(SWING_STAGE_FRACTIONS[swingStage]);
+					boolean reached =
+							Math.abs(currentRotations() - stageTarget) <= STAGE_TOLERANCE_ROTATIONS;
+					boolean timedOut = now - swingStageStart >= STAGE_TIMEOUT_SECONDS;
+					if (reached || timedOut) {
+						swingStage++;
+						swingStageStart = now;
+						goToAgitate(raisedByFraction(SWING_STAGE_FRACTIONS[swingStage]));
 					}
+				}
+			} else if (getState() == State.SWING) {
+				// Sweep end to end for as long as the state is held.
+				double now = Timer.getTimestamp();
+				if (now - lastPulseToggleTime >= FULL_SWING_LEG_SECONDS) {
+					pulseDeployed = !pulseDeployed;
+					goToAgitate(pulseDeployed ? deployRotations : RETRACT_ROTATIONS);
 					lastPulseToggleTime = now;
 				}
 			}
@@ -151,6 +259,7 @@ cfg.MotorOutput = new MotorOutputConfigs()
 			SmartDashboard.putNumber("Intake/Target", lastCommandedRotations);
 			SmartDashboard.putNumber("Intake/ErrorRotations", lastCommandedRotations - actual);
 			SmartDashboard.putString("Intake/State", getState().toString());
+			SmartDashboard.putNumber("Intake/SwingStage", swingStage);
 		}
 
 	@Override
@@ -160,13 +269,28 @@ cfg.MotorOutput = new MotorOutputConfigs()
 				lastCommandedRotations = Double.NaN;
 				motor.setControl(new CoastOut());
 			}
-			case DEPLOY  -> goTo(deployRotations);
+			case DEPLOY  -> {
+				// First deploy of the session skips the motion profile so the arm slams down; every
+				// deploy after that uses Motion Magic's limits.
+				if (hasDeployedOnce) {
+					goTo(deployRotations);
+				} else {
+					hasDeployedOnce = true;
+					goToFast(deployRotations);
+				}
+			}
 			case RETRACT -> goTo(RETRACT_ROTATIONS);
+			case STOW    -> goToFast(RETRACT_ROTATIONS);
 			case SHOOTER -> goTo(-0.6);
 			case PULSE   -> {
-				goTo(deployRotations);
+				swingStage = 0;
+				swingStageStart = Timer.getTimestamp();
+				goToAgitate(raisedByFraction(SWING_STAGE_FRACTIONS[0]));
+			}
+			case SWING   -> {
 				pulseDeployed = true;
 				lastPulseToggleTime = Timer.getTimestamp();
+				goToAgitate(deployRotations);
 			}
 		}
 	}

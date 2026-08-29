@@ -6,12 +6,16 @@ import org.wpilib.driverstation.internal.DriverStationBackend;
 import org.wpilib.driverstation.RobotState;
 import org.wpilib.driverstation.Gamepad;
 import org.wpilib.framework.TimedRobot;
+import org.wpilib.system.DataLogManager;
+import dev.doglog.DogLog;
+import dev.doglog.DogLogOptions;
 import org.wpilib.math.filter.Debouncer;
 import org.wpilib.math.geometry.Rotation2d;
 import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.command2.Command;
 import org.wpilib.command2.CommandScheduler;
 import org.wpilib.command2.Commands;
+import org.wpilib.command2.button.CommandGamepad;
 import org.wpilib.command2.button.Trigger;
 import frc.robot.imu.ImuSubsystem;
 import frc.robot.localization.LocalizationSubsystem;
@@ -65,6 +69,60 @@ public class Robot extends TimedRobot {
   private static final String SIM_ROTATION_AXIS_KEY = "Simulation/Driver/RotationAxis";
   private static final String SIM_SHOOT_AXIS_KEY = "Simulation/Driver/ShootAxis";
   private static final int RAW_XBOX_BACK_BUTTON = 6;
+
+  // Legacy XboxController axis layout, which is what the old Driver Station reports.
+  // WPILib 2027's Gamepad class assumes a different order -- it puts RightX/RightY on 2/3 and the
+  // triggers on 4/5 -- so getRightX() and rightTrigger() read the wrong physical control here.
+  // Read the raw indices directly instead of going through the named accessors.
+  //   0 LeftX   1 LeftY   2 LeftTrigger   3 RightTrigger   4 RightX   5 RightY
+  private static final int LEGACY_AXIS_LEFT_TRIGGER = 2;
+  private static final int LEGACY_AXIS_RIGHT_TRIGGER = 3;
+  private static final int LEGACY_AXIS_RIGHT_X = 4;
+  private static final double TRIGGER_PRESS_THRESHOLD = 0.1;
+
+  /**
+   * Starts on-robot logging to a WPILOG file.
+   *
+   * <p>DogLog writes through WPILib's DataLogManager, whose makeLogDir() prefers a mounted USB
+   * drive at /u when one is writable and falls back to <operating dir>/logs otherwise. So plugging
+   * in a flash drive is all that is needed to log to it -- no path is hardcoded here, and the robot
+   * still logs to internal storage when no drive is present.
+   *
+   * <p>Files land in /u/logs and open in AdvantageScope. The analyze-wpilog skill under
+   * .claude/skills covers reading them programmatically.
+   */
+  private void configureLogging() {
+    // Not started in simulation: it would drop wpilog files into the project directory on every
+    // run of the test suite.
+    if (RobotBase.isSimulation()) {
+      return;
+    }
+
+    DataLogManager.start();
+
+    DogLog.setOptions(
+        new DogLogOptions()
+            // Driver Station state (enabled/autonomous/test/estop) and joystick data. The
+            // analyze-wpilog skill relies on the /DS: entries these produce.
+            .withCaptureDs(true)
+            // System stats: CAN utilization, battery voltage, loop timing.
+            .withLogExtras(true)
+            // Mirror System.out into the log so console errors line up with robot state.
+            .withCaptureConsole(true)
+            // Tunables publish to NetworkTables only when not in a real match.
+            .withNtTunables(() -> !RobotState.isFMSAttached()));
+
+    DogLog.log("Robot/LogDir", DataLogManager.getLogDir());
+  }
+
+  /** Raw axis read that tolerates a controller reporting fewer axes than expected. */
+  private double rawAxis(CommandGamepad controller, int axis) {
+    var hid = controller.getHID();
+    if (axis < 0 || axis >= hid.getAxesMaximumIndex()) {
+      return 0.0;
+    }
+    return hid.getRawAxis(axis);
+  }
   private Command autonomousCommand = Commands.none();
   private final Hardware hardware = new Hardware();
 
@@ -96,6 +154,8 @@ public class Robot extends TimedRobot {
   private final IntakePosition intakePosition = new IntakePosition(hardware.intakePivotMotor);
   @SuppressWarnings("unused")
   private final BeamBreak beamBreak = new BeamBreak(hardware.beamBreakSensor);
+  // Kept constructed but unbound -- the X button that drove to the outpost is now a forceful stow.
+  @SuppressWarnings("unused")
   private final OutpostSetpoint outpost = new OutpostSetpoint(localization, swerve, intakePosition, intakeRoller);
   private final DrumStateMachine drumSM = new DrumStateMachine(drum);
   @SuppressWarnings("unused")
@@ -149,6 +209,8 @@ public class Robot extends TimedRobot {
   public Robot() {
     // Moved off DriverStation in 2027; only the internal backend still exposes it.
     DriverStationBackend.silenceJoystickConnectionWarning(true);
+
+    configureLogging();
 
     LifecycleSubsystemManager.ready();
 
@@ -227,7 +289,7 @@ public class Robot extends TimedRobot {
     // Set up point-to-point auto chooser (shows on SmartDashboard as "Auto Chooser")
   pointToPointAutos = new PointToPointAutos(
     swerve, localization, blinePathBuilder, drum, drumSM, hoodSM,
-    headingLock, turretLookup, indexer, hopper, intakeRoller, intakePosition);
+    headingLock, turretLookup, indexer, hopper, intakeRoller, intakePosition, beamBreak);
 
     ElasticLayoutUtil.onBoot();
 
@@ -470,7 +532,7 @@ public class Robot extends TimedRobot {
 
   private double getDriverRotationInput() {
     if (!RobotBase.isSimulation()) {
-      return hardware.driverController.getRightX();
+      return rawAxis(hardware.driverController, LEGACY_AXIS_RIGHT_X);
     }
 
     var driverHid = hardware.driverController.getHID();
@@ -487,7 +549,7 @@ public class Robot extends TimedRobot {
 
   private double getDriverShootInput() {
     if (!RobotBase.isSimulation()) {
-      return hardware.driverController.getRightTriggerAxis();
+      return rawAxis(hardware.driverController, LEGACY_AXIS_RIGHT_TRIGGER);
     }
 
     var driverHid = hardware.driverController.getHID();
@@ -666,7 +728,9 @@ public class Robot extends TimedRobot {
       )
     );
   
-      hardware.operatorController.leftTrigger(0.1).whileTrue(
+      new Trigger(() ->
+          rawAxis(hardware.operatorController, LEGACY_AXIS_LEFT_TRIGGER) > TRIGGER_PRESS_THRESHOLD
+      ).whileTrue(
       org.wpilib.command2.Commands.startEnd(
         () -> {
           drum.dutyCycle(0.5);
@@ -721,28 +785,25 @@ intakePosition.deploy();
 
     
 
-    hardware.driverController.leftTrigger(0.1).whileTrue(
+    new Trigger(() ->
+        rawAxis(hardware.driverController, LEGACY_AXIS_LEFT_TRIGGER) > TRIGGER_PRESS_THRESHOLD
+    ).whileTrue(
       org.wpilib.command2.Commands.startEnd(
         () -> {
-          
-        intakePosition.deploy();
-        intakeRoller.intake();
-
-  
+          intakePosition.deploy();
+          intakeRoller.intake();
         },
         () -> {
-              
-
-        intakeRoller.stop();
-        hopper.stop();
-    
+          intakeRoller.stop();
+          hopper.stop();
         }
       )
     );
 
 
-   hardware.driverController.westFace().whileTrue(
-      outpost.travelToOutpost()
+    // Forceful stow: pulls the arm all the way in with no motion profile.
+    hardware.driverController.westFace().onTrue(
+      org.wpilib.command2.Commands.runOnce(() -> intakePosition.forceStow())
     );
 
 
@@ -782,9 +843,7 @@ intakePosition.deploy();
 
 
 
-    Trigger shootTrigger = RobotBase.isSimulation()
-        ? new Trigger(() -> getDriverShootInput() > 0.1)
-        : hardware.driverController.rightTrigger(0.1);
+    Trigger shootTrigger = new Trigger(() -> getDriverShootInput() > TRIGGER_PRESS_THRESHOLD);
     shootTrigger.whileTrue(
       org.wpilib.command2.Commands.startEnd(
         () -> {
@@ -843,7 +902,12 @@ intakePosition.deploy();
             boolean validNow = params.isValid();
             boolean drumReady = drum.isAtGoal();
             boolean headingReady = headingLock.isSettled();
-            boolean allReadyRaw = validNow && slowEnough && drumReady && headingReady;
+            // Heading is NOT a gate. 581, 2910 and 6328 all gate the shot on flywheel (and hood)
+            // readiness only, and let the drivetrain converge on heading in parallel -- none of
+            // them block feeding on it. Gating on it here stalled the shot indefinitely whenever
+            // the snap settled a couple of degrees short, which it does consistently. The heading
+            // lock still runs and still aims; it just no longer holds the trigger hostage.
+            boolean allReadyRaw = validNow && slowEnough && drumReady;
             // Falling debounce: a single bad frame used to zero shootReadyFrames, which stopped the
             // indexer and hopper mid-shot. Heading settles in and out across the 2 degree tolerance
             // while the swerve holds angle, so the feed stuttered instead of running continuously
@@ -869,11 +933,13 @@ intakePosition.deploy();
               blocker = String.format(
                   "drum off RPM by %.0f", turretLookup.getActiveRpm() - drum.getRpm());
               blockedDrum++;
-            } else if (!headingReady) {
-              blocker = "heading not settled";
-              blockedHeading++;
             } else {
               blocker = "ready";
+            }
+            // Heading no longer blocks, but keep counting frames fired while off-target so aim
+            // quality stays visible instead of silently degrading.
+            if (!headingReady) {
+              blockedHeading++;
             }
 
             if (ENABLE_DASHBOARD) {
@@ -884,14 +950,26 @@ intakePosition.deploy();
               SmartDashboard.putNumber("Driver/BlockedFrames/Invalid", blockedInvalid);
               SmartDashboard.putNumber("Driver/BlockedFrames/TooFast", blockedTooFast);
               SmartDashboard.putNumber("Driver/BlockedFrames/DrumRPM", blockedDrum);
-              SmartDashboard.putNumber("Driver/BlockedFrames/Heading", blockedHeading);
+              // Not a blocker any more: frames fed while the heading was outside tolerance.
+              SmartDashboard.putNumber("Driver/FramesFedOffHeading", blockedHeading);
+              SmartDashboard.putBoolean("Driver/HeadingSettled", headingReady);
             }
             if (shootReadyFrames >= SHOOT_READY_FRAME_THRESHOLD) {
               indexer.feed();
               hopper.feed();
+              // Feeding: sweep the arm end to end to keep balls moving toward the indexer.
+              intakePosition.swing();
             } else {
               indexer.stop();
               hopper.stop();
+              // Waiting on the shot gate with nothing at the sensor -- run the staged agitation
+              // (20% of travel, then 50%, then all the way down) to work a ball into position.
+              // With a ball already there, leave the arm down and let the gate do its job.
+              if (!beamBreak.hasBall()) {
+                intakePosition.pulse();
+              } else {
+                intakePosition.deploy();
+              }
             }
           } else {
             updatePassingBehavior();

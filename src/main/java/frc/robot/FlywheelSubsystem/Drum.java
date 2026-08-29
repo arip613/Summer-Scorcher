@@ -134,9 +134,18 @@ public class Drum {
 
     // In torque-current mode the stator limit above is not the operative clamp -- this is.
     // Phoenix 6 defaults these to +/-800 A, so without this the only real limit was the supply
-    // limit. Symmetric because DRUM_OUTPUT_SIGN flips which direction accelerates the drum.
+    // limit.
+    //
+    // Asymmetric on purpose, the same idea as 581 clamping one direction to zero: a flywheel should
+    // only ever be driven, never actively braked. Braking wastes energy fighting the wheel's own
+    // inertia and does nothing useful when the loop overshoots by ~10 RPM.
+    //
+    // The direction is mirrored relative to 581 because DRUM_OUTPUT_SIGN is -1: the commanded
+    // velocity is negative, so NEGATIVE (reverse) torque accelerates this drum and POSITIVE
+    // (forward) torque brakes it. Clamping forward to 0 removes braking. Clamping reverse instead
+    // would stop it spinning up at all.
     cfg.TorqueCurrent = new TorqueCurrentConfigs()
-        .withPeakForwardTorqueCurrent(TORQUE_CURRENT_LIMIT)
+        .withPeakForwardTorqueCurrent(0)
         .withPeakReverseTorqueCurrent(-TORQUE_CURRENT_LIMIT);
 
     a1.getConfigurator().apply(cfg);
