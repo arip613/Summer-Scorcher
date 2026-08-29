@@ -27,6 +27,12 @@ public class Limelight extends StateMachine<LimelightState> {
 
   private final Timer limelightTimer = new Timer();
   private final Timer configTimer = new Timer();
+
+  /**
+   * How much less to trust a one-tag solve. Chosen so that at the 0.12 acceptance gate a single tag
+   * is accepted inside roughly 2.5m and rejected beyond it.
+   */
+  private static final double SINGLE_TAG_STD_DEV_PENALTY = 4.0;
   private CameraHealth cameraHealth = CameraHealth.NO_TARGETS;
   private double limelightHeartbeat = -1;
   /** Pipeline the camera was running before we ever corrected it. -1 until first observed. */
@@ -119,6 +125,16 @@ public class Limelight extends StateMachine<LimelightState> {
     SmartDashboard.putNumber(debugKey("RewindCaptureSeconds"), seconds);
   }
 
+
+  /**
+   * Confidence penalty for a solve built from very few tags.
+   *
+   * <p>Multiplies the standard deviations, so larger means trusted less. Two tags already fix the
+   * pose properly, so only the one-tag case is penalised.
+   */
+  private static double singleTagPenalty(int tagCount) {
+    return tagCount <= 1 ? SINGLE_TAG_STD_DEV_PENALTY : 1.0;
+  }
 
   /** Marks the result empty, records why, and publishes it for debugging. */
   private OptionalTagResult reject(String reason) {
@@ -221,6 +237,21 @@ public class Limelight extends StateMachine<LimelightState> {
       var xyDev = 0.01 * Math.pow(distance, 1.2);
       var thetaDev = 0.03 * Math.pow(distance, 1.2);
 
+      // Scale by how many tags produced the solve. The model above is distance-only, so a
+      // single-tag solve was handed to the estimator with exactly the same confidence as a
+      // four-tag one -- 0.06 at 4.5m either way. A lone tag has far weaker geometry and is the
+      // solve most likely to be wrong.
+      //
+      // In match AZGLE4_Q29, aiming at the goal with tags around 4.5m, TagCount oscillated
+      // 3,4,3,2,1,0,1,0,1,0 and every one-tag frame was fused at full weight. The estimate tore by
+      // metres and the snap chased it into a spin.
+      //
+      // With the penalty a one-tag solve at 4.5m lands at 0.24, past the 0.12 acceptance gate in
+      // LocalizationSubsystem, so it is dropped -- while the same solve inside about 2.5m still
+      // passes. That is the intent: a close single tag is usable, a distant one is not.
+      xyDev *= singleTagPenalty(mT2Estimate.tagCount);
+      thetaDev *= singleTagPenalty(mT2Estimate.tagCount);
+
       boolean isTeleop = org.wpilib.driverstation.RobotState.isTeleop();
       devs = VecBuilder.fill(xyDev, xyDev, isTeleop ? thetaDev : Double.MAX_VALUE);
 
@@ -239,6 +270,7 @@ public class Limelight extends StateMachine<LimelightState> {
     SmartDashboard.putString(debugKey("RejectReason"), "accepted");
     SmartDashboard.putBoolean(debugKey("Accepted"), true);
     SmartDashboard.putNumber(debugKey("XyStdDev"), devs.get(0, 0));
+    SmartDashboard.putNumber(debugKey("StdDevTagPenalty"), singleTagPenalty(mT2Estimate.tagCount));
     SmartDashboard.putNumberArray(
         debugKey("Pose"), new double[] {mt2Pose.getX(), mt2Pose.getY(), mt2Pose.getRotation().getDegrees()});
     return tagResult;
