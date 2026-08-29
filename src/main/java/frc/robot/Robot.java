@@ -1012,6 +1012,11 @@ intakePosition.deploy();
           org.wpilib.command2.Commands.runOnce(() -> intakePosition.deploy())
         )
       )
+      // Releasing the trigger part way through the agitation must leave the arm deployed, not
+      // latched in PULSE cycling forever. The startEnd above already deploys, but that relies on
+      // the parallel group ending its children in the order they were added; finallyDo runs after
+      // every child has ended, so it is the last word regardless of that ordering.
+      .finallyDo(interrupted -> intakePosition.deploy())
     );
 
 

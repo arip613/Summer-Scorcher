@@ -37,12 +37,20 @@ public class BeamBreak extends LifecycleSubsystem {
 
   private static final double UPDATE_HZ = 100.0;
 
-  /**
-   * A ball is present when the raw distance is under this, in meters. Compared directly against
-   * the latest reading -- no filtering, no debounce.
-   */
+  /** A ball is present when the distance is under this, in meters. */
   private static final String BALL_THRESHOLD_KEY = "BeamBreak/Tune/BallThresholdMeters";
   private static final double DEFAULT_BALL_THRESHOLD_METERS = 0.75;
+
+  /**
+   * Falling-edge debounce on the ball reading. Balls bounce, so a settling stack opens brief gaps
+   * in front of the sensor that are not the hopper running out. Falling only: a ball reappearing
+   * registers immediately, but it takes this long of continuous absence to call the hopper empty.
+   *
+   * <p>This matters because the flag drives the intake arm. Entering PULSE resets the agitation to
+   * stage 0, so a chattering reading would restart the sequence every few frames and leave the arm
+   * twitching at the first position instead of working through the cycle.
+   */
+  private static final double BALL_DEBOUNCE_SECONDS = 0.15;
 
   private final CANrange sensor;
   private final StatusSignal<Boolean> detectedSignal;
@@ -52,12 +60,15 @@ public class BeamBreak extends LifecycleSubsystem {
 
   private final Debouncer detectedDebouncer =
       new Debouncer(DEBOUNCE_SECONDS, Debouncer.DebounceType.kBoth);
+  private final Debouncer hasBallDebouncer =
+      new Debouncer(BALL_DEBOUNCE_SECONDS, Debouncer.DebounceType.kFalling);
 
   private boolean detected = false;
   private boolean detectedRaw = false;
   private double distanceMeters = 0.0;
   private double signalStrength = 0.0;
   private boolean hasBall = false;
+  private boolean hasBallRaw = false;
 
   public BeamBreak(CANrange sensor) {
     super(SubsystemPriority.IMU);
@@ -90,9 +101,17 @@ public class BeamBreak extends LifecycleSubsystem {
     SmartDashboard.setDefaultNumber(BALL_THRESHOLD_KEY, DEFAULT_BALL_THRESHOLD_METERS);
   }
 
-  /** True while the raw distance reading is under the ball threshold. Unfiltered. */
+  /**
+   * True while a ball is in front of the sensor. Debounced on the falling edge, so a bouncing ball
+   * momentarily clearing the sensor does not read as the hopper running dry.
+   */
   public boolean hasBall() {
     return hasBall;
+  }
+
+  /** Undebounced ball reading, for checking the threshold against live distances. */
+  public boolean hasBallRaw() {
+    return hasBallRaw;
   }
 
   /** True while an object is within the threshold. Debounced. */
@@ -125,12 +144,14 @@ public class BeamBreak extends LifecycleSubsystem {
     signalStrength = readDouble(signalStrengthSignal);
     detected = detectedDebouncer.calculate(detectedRaw);
 
-    // Raw comparison against the latest reading. A dead sensor reads 0.0 m, which would otherwise
-    // look like a ball pressed right against it, so require a live reading above zero.
+    // A dead sensor reads 0.0 m, which would otherwise look like a ball pressed right against it,
+    // so require a live reading above zero.
     double threshold = SmartDashboard.getNumber(BALL_THRESHOLD_KEY, DEFAULT_BALL_THRESHOLD_METERS);
-    hasBall = ok && distanceMeters > 0.0 && distanceMeters < threshold;
+    hasBallRaw = ok && distanceMeters > 0.0 && distanceMeters < threshold;
+    hasBall = hasBallDebouncer.calculate(hasBallRaw);
 
     SmartDashboard.putBoolean("BeamBreak/HasBall", hasBall);
+    SmartDashboard.putBoolean("BeamBreak/HasBallRaw", hasBallRaw);
     SmartDashboard.putBoolean("BeamBreak/Detected", detected);
     SmartDashboard.putBoolean("BeamBreak/DetectedRaw", detectedRaw);
     SmartDashboard.putNumber("BeamBreak/DistanceMeters", distanceMeters);
