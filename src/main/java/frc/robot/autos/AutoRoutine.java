@@ -12,6 +12,7 @@ import frc.robot.lib.BLine.FollowPath;
 import frc.robot.lib.BLine.Path;
 import frc.robot.lib.BLine.Path.Waypoint;
 import frc.robot.lib.BLine.Path.PathConstraints;
+import frc.robot.lib.BLine.Path.RangedConstraint;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -231,21 +232,36 @@ public class AutoRoutine {
     List<Path.PathElement> elements = new ArrayList<>(pendingWaypoints);
     Path path;
 
-    // A BLine constraint applies to this complete batched path, so use the most restrictive
-    // maximum requested by any waypoint in the segment.
+    // Apply each waypoint's speed cap to that waypoint alone, using BLine's ranged constraints.
+    // Path resolves velocity per element ordinal, and because this builder only ever emits
+    // Waypoints, the translation ordinal is just the index into pendingWaypoints. The constraint
+    // at index i governs the approach TO waypoint i, which is what driveToAll(..., maxSpeed)
+    // means. Collapsing the batch to its single most restrictive cap instead -- as this used to
+    // do -- slowed the whole path down: in SideAuto only 5.2m of the 16.5m second batch asked
+    // for 2.7 m/s, but all of it ran at 2.7 m/s, costing about 1.4s of a 20s auto.
+    List<RangedConstraint> speedConstraints = new ArrayList<>();
+    for (int i = 0; i < pendingMaxSpeeds.size(); i++) {
+      Double speed = pendingMaxSpeeds.get(i);
+      if (speed != null) {
+        speedConstraints.add(new RangedConstraint(speed, i, i));
+      }
+    }
+
+    if (speedConstraints.isEmpty()) {
+      path = new Path(elements);
+    } else {
+      PathConstraints constraints = new PathConstraints()
+          .setMaxVelocityMetersPerSec(speedConstraints.toArray(new RangedConstraint[0]));
+      path = new Path(elements, constraints);
+    }
+
+    // The safety timeout stays keyed to the slowest cap in the batch: it is a stuck-robot escape
+    // hatch, so the conservative estimate is the correct one.
     Double minMaxSpeed = null;
     for (Double speed : pendingMaxSpeeds) {
       if (speed != null && (minMaxSpeed == null || speed < minMaxSpeed)) {
         minMaxSpeed = speed;
       }
-    }
-
-    if (minMaxSpeed != null) {
-      PathConstraints constraints = new PathConstraints()
-          .setMaxVelocityMetersPerSec(minMaxSpeed);
-      path = new Path(elements, constraints);
-    } else {
-      path = new Path(elements);
     }
 
     Command drive = pathBuilder.build(path);
