@@ -124,6 +124,13 @@ public class Robot extends TimedRobot {
     }
     return hid.getRawAxis(axis);
   }
+  /**
+   * Requires the shoot/pass zone decision to hold for this long before acting on it. Long enough to
+   * ride out pose noise at the threshold, short enough that deliberately driving across the line
+   * still switches modes promptly.
+   */
+  private final Debouncer shootZoneDebouncer = new Debouncer(0.3, Debouncer.DebounceType.kBoth);
+
   private Command autonomousCommand = Commands.none();
   private final Hardware hardware = new Hardware();
 
@@ -902,7 +909,15 @@ intakePosition.deploy();
         }
       ).alongWith(
         org.wpilib.command2.Commands.run(() -> {
-          boolean desiredShootMode = FieldPoints.isInShootZone(localization.getPose().getX());
+          // Debounced. The zone is a bare threshold on pose X, and the pose is noisy at the
+          // metre level -- in AZGLE4_Q12 the robot sat around X=10.5 with a single sample at
+          // 11.02, which flipped shoot mode on for one loop and back. That one frame ran
+          // enterRightTriggerMode twice, cleared the passing state and yanked the hood target from
+          // the pass angle to a shot lookup angle and back, restarting a 40 degree hood move in
+          // the middle of the driver's pass attempt.
+          boolean desiredShootMode =
+              shootZoneDebouncer.calculate(
+                  FieldPoints.isInShootZone(localization.getPose().getX()));
           if (desiredShootMode != rtShootMode) {
             enterRightTriggerMode(desiredShootMode);
           }

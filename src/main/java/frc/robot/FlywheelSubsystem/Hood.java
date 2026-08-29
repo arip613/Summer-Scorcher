@@ -15,7 +15,23 @@ public class Hood {
 	private static final double GEAR_RATIO = 84.0; 
 	private static final double MIN_DEG = -40;
 	private static final double MAX_DEG = 40;
-	private static final double AT_GOAL_TOL_DEG = 0.1;
+	/**
+	 * How close the hood has to be to its target to count as ready.
+	 *
+	 * <p>Was 0.1 degrees, which the hood cannot physically hold. Slot0 is pure kP with no kI and no
+	 * kG, so it settles wherever the proportional term balances gravity and friction: measured at
+	 * -39.54 against a -40 target in match AZGLE4_Q12, a steady 0.46 degrees short, held for 2.4
+	 * seconds. isAtGoal() was false the entire time.
+	 *
+	 * <p>That only ever broke passing, because passReady is the one gate that checks the hood --
+	 * the shot gate deliberately does not -- so the pass could never fire no matter how long the
+	 * driver held the trigger. 1.0 gives about 2x margin over the observed droop while still being
+	 * tight enough to matter for shot angle.
+	 *
+	 * <p>The droop itself is the real defect. Adding kG to Slot0 would remove it and let this go
+	 * back to being tight, but that is tuning that needs the robot.
+	 */
+	private static final double AT_GOAL_TOL_DEG = 1.0;
 
 	private final TalonFX motor;
 	private final MotionMagicTorqueCurrentFOC mmRequest = new MotionMagicTorqueCurrentFOC(0).withSlot(0);
