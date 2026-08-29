@@ -2,28 +2,22 @@ package frc.robot;
 
 import org.wpilib.command2.button.CommandGamepad;
 import com.ctre.phoenix6.CANBus;
-import com.ctre.phoenix6.Utils;
 import com.ctre.phoenix6.hardware.CANrange;
 import com.ctre.phoenix6.hardware.TalonFX;
+import frc.robot.config.CanBuses;
 import frc.robot.vision.limelight.Limelight;
 import frc.robot.vision.limelight.LimelightModel;
 import frc.robot.vision.limelight.LimelightState;
 
 public class Hardware {
 
-  // SystemCore has five built-in CAN buses (can_s0..can_s4). The roboRIO's "rio" bus and
-  // CANivore USB adapters do not exist on this platform -- naming them made Phoenix fail
-  // with "CANbus Failed to Connect". Bus assignments verified by candump on the robot:
-  // can_s0 carries device IDs 0,1,2,3,5-12,21-29,51; can_s4 carries 31,32.
-  // Phoenix desktop simulation exposes one default simulated bus. Device IDs are unique across
-  // these two real buses, so both can safely share it in sim.
-  private static final CANBus CANIVORE =
-      Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(0);
-  private static final CANBus RIO =
-      Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(4);
-  /** can_s1 carries the CANrange used as a beam break. */
-  private static final CANBus SENSOR_BUS =
-      Utils.isSimulation() ? new CANBus("") : CANBus.systemcore(1);
+  // Buses are defined in CanBuses so the drivetrain and the mechanisms cannot end up naming
+  // different ones. Everything that used to sit on SystemCore's can_s0 -- the swerve drivetrain
+  // and every mechanism motor -- is now on the CANivore; can_s0 is unused. The intake rollers
+  // stay on can_s4 and the CANrange on can_s1.
+  private static final CANBus CANIVORE = CanBuses.CANIVORE;
+  private static final CANBus ROLLER_BUS = CanBuses.ROLLERS;
+  private static final CANBus SENSOR_BUS = CanBuses.SENSORS;
 
   public final CommandGamepad driverController = new CommandGamepad(0);
   public final CommandGamepad operatorController   = new CommandGamepad(1); 
@@ -37,8 +31,8 @@ public class Hardware {
   public final TalonFX indexerMotor      = new TalonFX(25, CANIVORE);
   public final TalonFX indexerMotor2     = new TalonFX(26, CANIVORE);
   public final TalonFX intakePivotMotor  = new TalonFX(28, CANIVORE);
-  public final TalonFX intakeRollerMotorA = new TalonFX(31, RIO);   
-  public final TalonFX intakeRollerMotorB     = new TalonFX(32, RIO);
+  public final TalonFX intakeRollerMotorA = new TalonFX(31, ROLLER_BUS);   
+  public final TalonFX intakeRollerMotorB     = new TalonFX(32, ROLLER_BUS);
 
   /** CANrange on can_s1, ID 0, used as a beam break. */
   public final CANrange beamBreakSensor = new CANrange(0, SENSOR_BUS);
