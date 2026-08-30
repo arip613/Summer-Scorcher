@@ -23,7 +23,23 @@ import frc.robot.vision.results.TagResult;
 import org.wpilib.framework.RobotBase;
 
 public class LocalizationSubsystem extends StateMachine<LocalizationState> {
-  private static final double MAX_VISION_XY_STD_DEV = 0.12;
+  /**
+   * Hard rejection threshold for a vision measurement's xy standard deviation.
+   *
+   * <p>This is a garbage filter, not a quality filter. The standard deviation is already how a
+   * measurement is weighted -- the pose estimator moves far less for a 0.24 solve than a 0.06 one --
+   * so a tight gate throws away information the filter would have correctly discounted on its own.
+   *
+   * <p>0.12 was tight enough to be doing the weighting itself. In match AZGLE4_Q49 half the frames
+   * in auto were single-tag with tags averaging 4.9m out, which lands them at 0.135 even with auto's
+   * softened penalty -- so roughly half of all vision was discarded, the estimator coasted on
+   * odometry between accepts, and it had drifted 0.4-0.75m from what the camera could see by the
+   * time the robot reached the bump.
+   *
+   * <p>0.25 admits those, weighted for what they are, while still rejecting a teleop single-tag
+   * solve at that range (4x penalty puts it at 0.27) and anything genuinely broken.
+   */
+  private static final double MAX_VISION_XY_STD_DEV = 0.25;
   private static final int MIN_TAGS_FOR_HEADING = 2;
   private static final double MAX_HEADING_THETA_STD_DEV = 0.05;
   private static final String RIGHT_LIMELIGHT_NAME = "limelight-right";

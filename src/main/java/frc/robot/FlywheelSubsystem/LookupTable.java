@@ -157,7 +157,7 @@ public class LookupTable extends StateMachine<LookupTable.State> {
     // --- measured 2026-08-28 ---
     addShotPoint(new ShotPoint(1.92, 0.0, 2500, -17.2));
     addShotPoint(new ShotPoint(2.33, 0.0, 2800, -24.0));
-    addShotPoint(new ShotPoint(3.63, 0.0, 2900, -33.0));
+    addShotPoint(new ShotPoint(3.63, 0.0, 2950, -33.0));
     // --- extrapolated, NOT measured: linear continuation of the adjacent segment, so the table
     // stops clamping outside 1.92..3.63 m. Verify before trusting either one.
     addShotPoint(new ShotPoint(1.50, 0.0, 2190, -10.2));
