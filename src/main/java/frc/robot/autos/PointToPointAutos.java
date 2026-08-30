@@ -347,7 +347,7 @@ public class PointToPointAutos {
         .bumpCross(Rotation2d.kZero)
         .driveToAll(sidePose("firstShootApproach", 13.2, 5.3, 270, leftSide))
         .driveToAll(sidePose("firstShoot", 13.7, 5.2, 195, leftSide))
-        .runFor(3, startShooting())
+        .runFor(6, startShooting())
         .run(stopShooting())
         // ===== SECOND CYCLE (trench + second pickup + second shot) -- DISABLED =====
         // The auto now ends after the first shot. In match AZGLE4_Q19 the first half took 14.9s of

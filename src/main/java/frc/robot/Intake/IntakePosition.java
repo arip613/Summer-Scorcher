@@ -40,7 +40,7 @@ public class IntakePosition extends StateMachine<IntakePosition.State> {
 	// This is where the arm sits on teleop enable and while the left trigger is held. Lowered by
 	// 0.15 rotations from 9.75 for about a quarter inch, at the ~0.6 rotations/inch implied by the
 	// -1.26..9.75 sweep.
-	private static final double DEFAULT_DEPLOY_ROTATIONS = 9.75;
+	private static final double DEFAULT_DEPLOY_ROTATIONS = 10;
 	private static final String DEPLOY_KEY = "Intake/Tune/DeployRotations";
 
 	/**

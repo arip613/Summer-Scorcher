@@ -52,10 +52,22 @@ public class Hood {
 						.withMotionMagicCruiseVelocity(100.0)
 						.withMotionMagicAcceleration(120)
 						.withMotionMagicJerk(1200);
+		// Raised from 40A stator / 20A supply. The hood repeatedly parked at -6.5 degrees against
+		// targets of -19.6, -32.7 and -40 in match AZGLE4_E14 -- always the same angle, wildly
+		// different commands -- while at other points in the same match it sailed through to -36.4.
+		// Something catches around -6.5 and 40A could not reliably break it, which is why the pass
+		// never fired: passReady needs hood.isAtGoal() and the hood never arrived.
+		//
+		// Stator is what produces torque at a stall, so that is the one that matters here. Supply
+		// goes up with it so it does not become the new limit once duty climbs while pushing.
+		//
+		// This buys torque to get through a mechanical catch; it does not remove the catch. Watch
+		// Hood/StatorCurrent: sitting pinned at 60A is the hood grinding against something, not
+		// working, and wants fixing mechanically rather than with more current.
 		cfg.CurrentLimits = new CurrentLimitsConfigs()
-				.withSupplyCurrentLimit(20.0)
+				.withSupplyCurrentLimit(30.0)
 				.withSupplyCurrentLimitEnable(true)
-				.withStatorCurrentLimit(40.0)
+				.withStatorCurrentLimit(60.0)
 				.withStatorCurrentLimitEnable(true);
 
 		motor.getConfigurator().apply(cfg);
@@ -102,7 +114,24 @@ public class Hood {
 		SmartDashboard.putNumber("Hood/AngleDeg", getAngleDegrees());
 		SmartDashboard.putNumber("Hood/TargetDeg", lastTargetDeg);
 		SmartDashboard.putBoolean("Hood/AtGoal", isAtGoal());
+		SmartDashboard.putNumber("Hood/ErrorDeg", lastTargetDeg - getAngleDegrees());
 
+		// A stall and a mechanism that is merely slow look identical in position alone, which is
+		// what made the E14 hood problem take a log dive to find. Pinned current with standing
+		// error is a stall; that reads off these two immediately.
+		SmartDashboard.putNumber("Hood/StatorCurrent", readCurrent(true));
+		SmartDashboard.putNumber("Hood/SupplyCurrent", readCurrent(false));
+	}
+
+	/** Guarded because a motor that is absent or off the bus returns null rather than a value. */
+	private double readCurrent(boolean stator) {
+		try {
+			var signal = stator ? motor.getStatorCurrent() : motor.getSupplyCurrent();
+			Double value = signal.getValueAsDouble();
+			return value == null ? 0.0 : value;
+		} catch (Exception ex) {
+			return 0.0;
+		}
 	}
 
 	public double getAngleRadians() {
