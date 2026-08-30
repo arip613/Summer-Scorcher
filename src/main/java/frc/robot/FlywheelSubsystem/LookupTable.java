@@ -157,6 +157,10 @@ public class LookupTable extends StateMachine<LookupTable.State> {
     // --- measured 2026-08-28 ---
     addShotPoint(new ShotPoint(1.92, 0.0, 2500, -17.2));
     addShotPoint(new ShotPoint(2.33, 0.0, 2800, -24.0));
+    // Measured 2026-08-30 from the teleop shots in match AZGLE4_Q55, taken at 2.56-2.70m. The
+    // table interpolated -26.2 there and the shot wanted -26.5. RPM is pinned to 2837, which is
+    // what the 2.33->3.63 line already gave at this distance, so only the hood curve moves.
+    addShotPoint(new ShotPoint(2.65, 0.0, 2837, -26.5));
     addShotPoint(new ShotPoint(3.63, 0.0, 2950, -33.0));
     // --- extrapolated, NOT measured: linear continuation of the adjacent segment, so the table
     // stops clamping outside 1.92..3.63 m. Verify before trusting either one.
