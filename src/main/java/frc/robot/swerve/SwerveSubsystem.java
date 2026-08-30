@@ -63,11 +63,36 @@ public class SwerveSubsystem extends StateMachine<SwerveState> {
 
   public final Pigeon2 drivetrainPigeon = drivetrain.getPigeon2();
 
+  /**
+   * Deadbands on the shared drive request, as absolute rates rather than a fraction of the maxima.
+   *
+   * <p>They were maxAngularRate * 0.015 and MaxSpeed * 0.015. Because maxAngularRate is 1440 deg/s
+   * that made the rotational deadband 21.6 deg/s -- larger than what the path follower commands
+   * anywhere near its own tolerance. BLine asks for kP * error, so at its 2 degree end tolerance it
+   * commands 8 deg/s, which was zeroed: the robot physically could not rotate below 5.4 degrees of
+   * error, and a 2 degree tolerance sits inside that dead zone.
+   *
+   * <p>Match AZGLE4_Q38 is the consequence. After the bump the robot reached the shoot pose within
+   * 2cm at t=98.9 and then sat completely still at 4.9 degrees of heading error until the drive
+   * safety timeout released it 4.5s later. isFinished() was unsatisfiable, so every path was
+   * waiting out its timeout rather than completing.
+   *
+   * <p>The translation deadband had the same shape with only 5% of margin -- it stalls at 0.0285m
+   * against a 0.03m tolerance. Both are now well inside what the follower can command: rotation
+   * stalls at 0.7 degrees, translation at 0.008m.
+   *
+   * <p>These only ever existed to stop joystick noise causing creep, and driveTeleop already
+   * deadbands its own stick input before it gets here.
+   */
+  private static final double DRIVE_TRANSLATION_DEADBAND_MPS = 0.02;
+
+  private static final double DRIVE_ROTATIONAL_DEADBAND_RAD_PER_SEC = 0.05;
+
   private final SwerveRequest.FieldCentric drive =
       new SwerveRequest.FieldCentric()
           .withDriveRequestType(DriveRequestType.OpenLoopVoltage)
-          .withDeadband(MaxSpeed * 0.015)
-          .withRotationalDeadband(maxAngularRate * 0.015);
+          .withDeadband(DRIVE_TRANSLATION_DEADBAND_MPS)
+          .withRotationalDeadband(DRIVE_ROTATIONAL_DEADBAND_RAD_PER_SEC);
 
   private final SwerveRequest.FieldCentricFacingAngle driveToAngle =
       new SwerveRequest.FieldCentricFacingAngle()
