@@ -5,8 +5,10 @@ import frc.robot.util.state_machines.StateMachine;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.wpilib.math.filter.Debouncer;
 import org.wpilib.math.filter.Debouncer.DebounceType;
+import org.wpilib.math.geometry.Pose2d;
 import org.wpilib.math.geometry.Rotation2d;
 import org.wpilib.math.geometry.Rotation3d;
 import org.wpilib.math.geometry.Translation2d;
@@ -55,6 +57,21 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   private static final double OVERRIDE_HARD_LIMIT_SECONDS = 5.0;
 
   /**
+   * Furthest the override may carry the robot along the crossing direction before it hands back.
+   *
+   * <p>The time limits above bound how long it runs, which is not the same as bounding where it
+   * ends up: at 4 m/s even a short phase covers metres. The crossing leg is only about 3.5m long
+   * and the bump sits inside it, so 2.5m is comfortably past the bump while still leaving the
+   * follower the last stretch to close normally.
+   *
+   * <p>Match AZGLE4_Q55 needed this. The tilt sequence came in as descend-then-climb rather than
+   * climb-then-descend, so the state machine never saw its downhill and only exited on the 0.75s
+   * flat fallback -- by which point the override had driven 5.63m along a 3.49m leg, ending 2.17m
+   * past the target and 1.17m from the far wall.
+   */
+  private static final double MAX_OVERRIDE_TRAVEL_METERS = 2.5;
+
+  /**
    * Speed commanded along the crossing direction while on the bump, matching 581.
    *
    * <p>This must not be set below what the follower would have commanded anyway, or the override
@@ -99,6 +116,7 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   private final ImuSubsystem imu;
   private final Consumer<Translation2d> poseResetConsumer;
   private final BooleanSupplier poseTrusted;
+  private final Supplier<Pose2d> poseSupplier;
 
   private final Debouncer flatDebouncer = new Debouncer(FLAT_DEBOUNCE_SECONDS, DebounceType.kRising);
   private final Debouncer flatFallbackDebouncer =
@@ -108,16 +126,28 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
   private Optional<Translation2d> landingPoint = Optional.empty();
   private double directionalTilt = 0.0;
   private double crossingArmedTimestamp = 0.0;
+  private Translation2d crossingArmedTranslation = Translation2d.kZero;
   private boolean isFlat = true;
   private boolean isFlatFallbackDebounced = false;
   private int completedCrossings = 0;
 
   public BumpCrossingTracker(
-      ImuSubsystem imu, Consumer<Translation2d> poseResetConsumer, BooleanSupplier poseTrusted) {
+      ImuSubsystem imu,
+      Consumer<Translation2d> poseResetConsumer,
+      BooleanSupplier poseTrusted,
+      Supplier<Pose2d> poseSupplier) {
     super(SubsystemPriority.BUMP_CROSSING, BumpCrossingState.FLAT_NOT_CROSSING);
     this.imu = imu;
     this.poseResetConsumer = poseResetConsumer;
     this.poseTrusted = poseTrusted;
+    this.poseSupplier = poseSupplier;
+  }
+
+  /** How far the robot has moved along the crossing direction since the crossing was armed. */
+  private double travelAlongCrossing() {
+    var delta = poseSupplier.get().getTranslation().minus(crossingArmedTranslation);
+
+    return (delta.getX() * crossingDirection.getCos()) + (delta.getY() * crossingDirection.getSin());
   }
 
   /**
@@ -154,6 +184,7 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
     this.crossingDirection = crossingDirection;
     this.landingPoint = landingPoint;
     crossingArmedTimestamp = Timer.getTimestamp();
+    crossingArmedTranslation = poseSupplier.get().getTranslation();
     setStateFromRequest(BumpCrossingState.FLAT_ABOUT_TO_CROSS);
   }
 
@@ -178,6 +209,13 @@ public class BumpCrossingTracker extends StateMachine<BumpCrossingState> {
 
   @Override
   protected BumpCrossingState getNextState(BumpCrossingState currentState) {
+    // Bound where the override ends up, not just how long it runs. The tilt sequence can fail to
+    // complete in ways the phase timeouts absorb far too slowly at 4 m/s.
+    if (currentState.isCrossing() && travelAlongCrossing() > MAX_OVERRIDE_TRAVEL_METERS) {
+      SmartDashboard.putNumber("BumpCrossing/TravelAtHandback", travelAlongCrossing());
+      return finishCrossing("travelled far enough", false);
+    }
+
     // The pose can go bad mid-crossing too -- a collision, or vision correcting a drift. Bail out
     // rather than keep steering an open-loop move by an estimate that just changed under us.
     if (currentState.isCrossing() && !poseTrusted.getAsBoolean()) {

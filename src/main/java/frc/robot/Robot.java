@@ -166,7 +166,10 @@ public class Robot extends TimedRobot {
   // partway through the constructor, and anything built after it never gets a periodic.
   private final BumpCrossingTracker bumpCrossingTracker =
       new BumpCrossingTracker(
-          imu, localization::resetTranslationOnly, localization::isPoseTrusted);
+          imu,
+          localization::resetTranslationOnly,
+          localization::isPoseTrusted,
+          localization::getPose);
   private final HeadingLock headingLock = new HeadingLock(localization, swerve);
   private final DistanceCalc distanceCalc = new DistanceCalc(localization, headingLock);
   private final Drum drum = new Drum(
@@ -211,7 +214,7 @@ public class Robot extends TimedRobot {
   private boolean rtTriggerHeld = false;
 
   /** Idle flywheel speed held whenever the robot is parked in its own shooting zone. */
-  private static final double IDLE_PRESPIN_RPM = 1200.0;
+  private static final double IDLE_PRESPIN_RPM = 200.0;
 
   /**
    * Battery voltage at which the shooter is considered a liability rather than an asset. Well above

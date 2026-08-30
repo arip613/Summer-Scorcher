@@ -330,7 +330,7 @@ public class PointToPointAutos {
         // Into the ball pile. Taken at full speed the robot buries itself and stalls, so this is
         // the one approach in the first batch that is capped. Only this waypoint slows down --
         // caps are per waypoint, so the run up to firstPickupOuter still happens at full speed.
-        .driveToAll(sidePose("firstPickupInner", 8.88, 4.471, 115, leftSide), 1.8)
+        .driveToAll(sidePose("firstPickupInner", 8.88, 5.3, 115, leftSide), 1.8)
         // Crossing leg biased 0.5m toward the near field wall, which is 0.5m further from the hub.
         // Stated in red-source Y, so 5.0 -> 5.5; the left-side variants mirror to 3.069 -> 2.569
         // and move toward their own wall. Both gain the same 0.5m of hub clearance.
@@ -340,12 +340,12 @@ public class PointToPointAutos {
         // into it. The clearance now exceeds the drift that was actually observed.
         //
         // Only this leg moves. The pickups and the shoot pose are tuned where they are.
-        .driveToAll(sidePose("lineupToBump", 9.71, 5.5, 270, leftSide))
+        .driveToAll(sidePose("lineupToBump", 9.71, 5.3, 270, leftSide))
         // Crossing runs +X in red coords (9.71 -> 13.2). No landing point yet: a pose reset to a
         // guessed location is worse than none, so this is velocity override only until the real
         // landing spot is measured.
         .bumpCross(Rotation2d.kZero)
-        .driveToAll(sidePose("firstShootApproach", 13.2, 5.5, 270, leftSide))
+        .driveToAll(sidePose("firstShootApproach", 13.2, 5.3, 270, leftSide))
         .driveToAll(sidePose("firstShoot", 13.7, 5.2, 195, leftSide))
         .runFor(3, startShooting())
         .run(stopShooting())
