@@ -227,6 +227,20 @@ public class Robot extends TimedRobot {
   /** Rising debounce, so one sag frame does not kill a shot that was about to happen. */
   private final Debouncer brownoutDebouncer =
       new Debouncer(0.15, Debouncer.DebounceType.kRising);
+
+  /**
+   * Latched once the shooter has been shed for brownout, killing idle spin-up for the rest of the
+   * match.
+   *
+   * <p>A battery that sagged under 7.5V once while driving will do it again, and idle spin is the
+   * one shooter load nobody asked for -- it burns current continuously just in case a shot happens.
+   * Giving it up costs a slower first shot; not giving it up risks the brownout that the shed was
+   * trying to avoid, repeatedly, for the rest of the match.
+   *
+   * <p>Only the idle spin is given up. The driver can still shoot: holding the trigger commands the
+   * drum as normal, and the shed still fires on top of that if the voltage sags again.
+   */
+  private boolean idleSpinDisabledByBrownout = false;
   private static final double SHOOT_SPEED_THRESHOLD = 0.5; // m/s — don't feed if moving faster
   private phaseTimer.Phase lastPhase = null;
   private boolean warningRumbleSent = false;
@@ -264,6 +278,13 @@ public class Robot extends TimedRobot {
     LifecycleSubsystemManager.ready();
 
     SmartDashboard.putData("Field", field2d);
+    // The latch clears itself at autonomousInit, which covers a real match. A teleop-only practice
+    // session never hits that, so give the pit a way to clear it without a redeploy.
+    SmartDashboard.putData(
+        "Power/ClearIdleSpinLatch",
+        Commands.runOnce(() -> idleSpinDisabledByBrownout = false)
+            .ignoringDisable(true)
+            .withName("ClearIdleSpinLatch"));
 
     if (simulation != null) {
       simulation.initialize();
@@ -424,6 +445,9 @@ public class Robot extends TimedRobot {
 
   @Override
   public void autonomousInit() {
+    // Start of a match: the latch is per-match, and the battery has just been swapped or rested.
+    idleSpinDisabledByBrownout = false;
+
     // Use the point-to-point auto chooser from SmartDashboard
     autonomousCommand = pointToPointAutos.getSelected();
     if (autonomousCommand == null) {
@@ -725,9 +749,17 @@ public class Robot extends TimedRobot {
     boolean sagging = brownoutDebouncer.calculate(volts < BROWNOUT_VOLTAGE);
     boolean shedForBrownout = sagging && driving;
 
+    if (shedForBrownout && !idleSpinDisabledByBrownout) {
+      idleSpinDisabledByBrownout = true;
+      System.out.println(
+          "[Power] Shooter shed at " + volts + "V while driving; idle spin-up disabled for the"
+              + " rest of the match.");
+    }
+
     if (ENABLE_DASHBOARD) {
       SmartDashboard.putNumber("Power/BatteryVolts", volts);
       SmartDashboard.putBoolean("Power/BrownoutShedShooter", shedForBrownout);
+      SmartDashboard.putBoolean("Power/IdleSpinDisabled", idleSpinDisabledByBrownout);
     }
 
     if (shedForBrownout) {
@@ -741,6 +773,12 @@ public class Robot extends TimedRobot {
     // Idle spin-up only fills the gap when nothing else is commanding the shooter. While the
     // trigger is held the shot path owns the drum, and auto's own sequence owns it there.
     if (rtTriggerHeld || !RobotState.isTeleopEnabled()) {
+      return;
+    }
+
+    if (idleSpinDisabledByBrownout) {
+      // Latched off for the match. Leave the drum alone entirely rather than commanding it off
+      // every loop, so nothing here fights a request made elsewhere.
       return;
     }
 
