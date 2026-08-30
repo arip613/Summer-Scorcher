@@ -32,7 +32,18 @@ public class Limelight extends StateMachine<LimelightState> {
    * How much less to trust a one-tag solve. Chosen so that at the 0.12 acceptance gate a single tag
    * is accepted inside roughly 2.5m and rejected beyond it.
    */
-  private static final double SINGLE_TAG_STD_DEV_PENALTY = 4.0;
+  private static final double SINGLE_TAG_STD_DEV_PENALTY_TELEOP = 4.0;
+
+  /**
+   * Softer penalty in auto. Auto has no driver to notice a bad pose and correct for it, and it
+   * needs a usable estimate more than it needs a perfect one -- match AZGLE4_Q38 ran its whole auto
+   * with vision over 200s stale, which also made the bump crossing refuse to arm.
+   *
+   * <p>38% of frames in that match were single-tag, and at 4x nearly all of them failed the 0.12
+   * gate. 2x accepts a single tag out to about 4.4m instead of 2.5m, which covers the range auto
+   * actually shoots from, while still trusting it half as much as a multi-tag solve.
+   */
+  private static final double SINGLE_TAG_STD_DEV_PENALTY_AUTO = 2.0;
   private CameraHealth cameraHealth = CameraHealth.NO_TARGETS;
   private double limelightHeartbeat = -1;
   /** Pipeline the camera was running before we ever corrected it. -1 until first observed. */
@@ -133,7 +144,12 @@ public class Limelight extends StateMachine<LimelightState> {
    * pose properly, so only the one-tag case is penalised.
    */
   private static double singleTagPenalty(int tagCount) {
-    return tagCount <= 1 ? SINGLE_TAG_STD_DEV_PENALTY : 1.0;
+    if (tagCount > 1) {
+      return 1.0;
+    }
+    return org.wpilib.driverstation.RobotState.isAutonomous()
+        ? SINGLE_TAG_STD_DEV_PENALTY_AUTO
+        : SINGLE_TAG_STD_DEV_PENALTY_TELEOP;
   }
 
   /** Marks the result empty, records why, and publishes it for debugging. */

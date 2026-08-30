@@ -7,6 +7,7 @@ import org.wpilib.driverstation.RobotState;
 import org.wpilib.driverstation.Gamepad;
 import org.wpilib.framework.TimedRobot;
 import org.wpilib.system.DataLogManager;
+import org.wpilib.system.RobotController;
 import dev.doglog.DogLog;
 import dev.doglog.DogLogOptions;
 import org.wpilib.math.filter.Debouncer;
@@ -205,6 +206,27 @@ public class Robot extends TimedRobot {
       new org.wpilib.math.controller.PIDController(3.0, 0.0, 0.0);
   private Translation2d activePassTarget;
   private boolean rtShootMode = true;
+
+  /** True while the driver is holding the shoot/pass trigger, so idle spin-up stays out of the way. */
+  private boolean rtTriggerHeld = false;
+
+  /** Idle flywheel speed held whenever the robot is parked in its own shooting zone. */
+  private static final double IDLE_PRESPIN_RPM = 1200.0;
+
+  /**
+   * Battery voltage at which the shooter is considered a liability rather than an asset. Well above
+   * the actual brownout floor, because the point is to never reach it: the drum is the largest
+   * current draw on the robot and shedding it while the drivetrain is also pulling is what keeps
+   * the robot from rebooting mid-match.
+   */
+  private static final double BROWNOUT_VOLTAGE = 7.5;
+
+  /** Above this speed the drivetrain is drawing enough that the drum's load matters. */
+  private static final double BROWNOUT_DRIVING_SPEED_MPS = 0.5;
+
+  /** Rising debounce, so one sag frame does not kill a shot that was about to happen. */
+  private final Debouncer brownoutDebouncer =
+      new Debouncer(0.15, Debouncer.DebounceType.kRising);
   private static final double SHOOT_SPEED_THRESHOLD = 0.5; // m/s — don't feed if moving faster
   private phaseTimer.Phase lastPhase = null;
   private boolean warningRumbleSent = false;
@@ -365,6 +387,9 @@ public class Robot extends TimedRobot {
   @Override
   public void robotPeriodic() {
     CommandScheduler.getInstance().run();
+    // After the scheduler, deliberately: this both overrides what a command asked of the drum and
+    // fills in the idle case no command covers.
+    updateFlywheelPower();
     publishDriverAxisDiagnostics();
     field2d.setRobotPose(localization.getPose());
     FieldPoints.publishHeadingLockPoints();
@@ -684,6 +709,48 @@ public class Robot extends TimedRobot {
     SmartDashboard.putNumber("Pass/HeadingError", 0.0);
   }
 
+  /**
+   * Keeps the flywheel spun up when it is likely to be needed, and sheds it when the battery cannot
+   * afford it.
+   *
+   * <p>Runs after CommandScheduler.run() on purpose. The brownout cut has to be able to override a
+   * command that is actively asking for shooter RPM, and the idle spin-up has to fill in the case
+   * where no command is asking for anything.
+   */
+  private void updateFlywheelPower() {
+    double volts = RobotController.getBatteryVoltage();
+    var speeds = swerve.getRobotRelativeSpeeds();
+    double robotSpeed = Math.hypot(speeds.vx, speeds.vy);
+    boolean driving = robotSpeed > BROWNOUT_DRIVING_SPEED_MPS;
+    boolean sagging = brownoutDebouncer.calculate(volts < BROWNOUT_VOLTAGE);
+    boolean shedForBrownout = sagging && driving;
+
+    if (ENABLE_DASHBOARD) {
+      SmartDashboard.putNumber("Power/BatteryVolts", volts);
+      SmartDashboard.putBoolean("Power/BrownoutShedShooter", shedForBrownout);
+    }
+
+    if (shedForBrownout) {
+      // Driving and sagging at the same time. The drum is the biggest load we control, so drop it
+      // rather than risk the whole robot rebooting -- a missed shot beats a reboot.
+      drumSM.requestOff();
+      hoodSM.requestOff();
+      return;
+    }
+
+    // Idle spin-up only fills the gap when nothing else is commanding the shooter. While the
+    // trigger is held the shot path owns the drum, and auto's own sequence owns it there.
+    if (rtTriggerHeld || !RobotState.isTeleopEnabled()) {
+      return;
+    }
+
+    if (FieldPoints.isInShootZone(localization.getPose().getX())) {
+      drumSM.requestRpm(IDLE_PRESPIN_RPM);
+    } else {
+      drumSM.requestOff();
+    }
+  }
+
   private void enterRightTriggerMode(boolean shooting) {
     rtShootMode = shooting;
     shootReadyFrames = 0;
@@ -899,10 +966,12 @@ intakePosition.deploy();
     shootTrigger.whileTrue(
       org.wpilib.command2.Commands.startEnd(
         () -> {
+          rtTriggerHeld = true;
           double robotX = localization.getPose().getX();
           enterRightTriggerMode(FieldPoints.isInShootZone(robotX));
         },
         () -> {
+          rtTriggerHeld = false;
           boolean wasShootMode = rtShootMode;
 
           if (wasShootMode) {
